@@ -1,8 +1,8 @@
 import { Buffer } from "node:buffer";
 import { createHash, createPublicKey, randomBytes, verify as verifySignature } from "node:crypto";
-import type { ApiRequest, ApiResponse } from "./http";
-import { parseCookies } from "./http";
-import { getUserBySession, type AuthUser } from "./db";
+import type { ApiRequest, ApiResponse } from "./http.js";
+import { parseCookies } from "./http.js";
+import { getUserBySession, type AuthUser } from "./db.js";
 
 export const SESSION_COOKIE = "budget_session";
 
@@ -89,4 +89,3 @@ export function methodNotAllowed(res: ApiResponse) {
   res.setHeader("Allow", "GET, POST, PUT");
   res.end("Method Not Allowed");
 }
-

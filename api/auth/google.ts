@@ -1,7 +1,7 @@
-import type { ApiRequest, ApiResponse } from "../lib/http";
-import { readJson, sendJson } from "../lib/http";
-import { createSessionToken, sessionCookie, tokenHash, verifyGoogleCredential } from "../lib/auth";
-import { insertSession, upsertUser } from "../lib/db";
+import type { ApiRequest, ApiResponse } from "../lib/http.js";
+import { readJson, sendJson } from "../lib/http.js";
+import { createSessionToken, sessionCookie, tokenHash, verifyGoogleCredential } from "../lib/auth.js";
+import { insertSession, upsertUser } from "../lib/db.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.method !== "POST") {

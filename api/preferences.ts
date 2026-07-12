@@ -1,7 +1,7 @@
-import type { ApiRequest, ApiResponse } from "./lib/http";
-import { readJson, sendJson } from "./lib/http";
-import { currentUser } from "./lib/auth";
-import { getPreferences, upsertPreferences, type BudgetPreferences } from "./lib/db";
+import type { ApiRequest, ApiResponse } from "./lib/http.js";
+import { readJson, sendJson } from "./lib/http.js";
+import { currentUser } from "./lib/auth.js";
+import { getPreferences, upsertPreferences, type BudgetPreferences } from "./lib/db.js";
 
 function normalizePreferences(body: Partial<BudgetPreferences>): BudgetPreferences {
   return {

@@ -1,6 +1,6 @@
-import type { ApiRequest, ApiResponse } from "./lib/http";
-import { getQueryParam, sendJson } from "./lib/http";
-import { getTransactions, isOpenFinanceConfigured } from "./lib/openFinance";
+import type { ApiRequest, ApiResponse } from "./lib/http.js";
+import { getQueryParam, sendJson } from "./lib/http.js";
+import { getTransactions, isOpenFinanceConfigured } from "./lib/openFinance.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (!isOpenFinanceConfigured()) {

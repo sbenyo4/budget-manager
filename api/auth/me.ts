@@ -1,6 +1,6 @@
-import type { ApiRequest, ApiResponse } from "../lib/http";
-import { sendJson } from "../lib/http";
-import { currentUser } from "../lib/auth";
+import type { ApiRequest, ApiResponse } from "../lib/http.js";
+import { sendJson } from "../lib/http.js";
+import { currentUser } from "../lib/auth.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {

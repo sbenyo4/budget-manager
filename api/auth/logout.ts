@@ -1,7 +1,7 @@
-import type { ApiRequest, ApiResponse } from "../lib/http";
-import { sendJson } from "../lib/http";
-import { currentSessionToken, sessionCookie, tokenHash } from "../lib/auth";
-import { deleteSession } from "../lib/db";
+import type { ApiRequest, ApiResponse } from "../lib/http.js";
+import { sendJson } from "../lib/http.js";
+import { currentSessionToken, sessionCookie, tokenHash } from "../lib/auth.js";
+import { deleteSession } from "../lib/db.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.method !== "POST") {
