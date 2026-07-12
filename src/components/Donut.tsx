@@ -14,12 +14,21 @@ export interface DonutSliceDetail {
   label: string;
   value: number;
   meta: string;
+  transactions?: DonutSliceDetailTransaction[];
   children?: DonutSliceDetail[];
   categoryOptions?: string[];
   categoryValue?: string;
   oneTime?: boolean;
   oneTimeAuto?: boolean;
   fixedOverride?: boolean;
+}
+
+export interface DonutSliceDetailTransaction {
+  id: string;
+  date: string;
+  merchant: string;
+  amount: number;
+  source?: string;
 }
 
 export interface CategoryChoice {
@@ -84,6 +93,16 @@ export function Donut({
   const rawTotal = slices.reduce((sum, s) => sum + s.value, 0);
   const activeSlices = slices.filter((s) => !excludedKeys?.has(s.key));
   const total = activeSlices.reduce((sum, s) => sum + s.value, 0);
+  const [expandedDetailKeys, setExpandedDetailKeys] = useState<Set<string>>(() => new Set());
+
+  function toggleDetail(key: string) {
+    setExpandedDetailKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   if (rawTotal === 0) {
     return (
@@ -180,9 +199,11 @@ export function Donut({
                             <ul className="legend-nested-list">
                               {d.children.map((child) => (
                                 <li key={child.key} className="legend-subrow nested">
-                                  <span className="legend-sublabel">{child.label}</span>
-                                  <span className="legend-subvalue">{formatILS(child.value)}</span>
-                                  <span className="legend-submeta">{child.meta}</span>
+                                  <DetailSummary
+                                    detail={child}
+                                    isOpen={expandedDetailKeys.has(child.key)}
+                                    onToggle={() => toggleDetail(child.key)}
+                                  />
                                   <DetailActions
                                     detail={child}
                                     options={detailCategoryOptions}
@@ -197,9 +218,11 @@ export function Donut({
                           </details>
                         ) : (
                           <>
-                            <span className="legend-sublabel">{d.label}</span>
-                            <span className="legend-subvalue">{formatILS(d.value)}</span>
-                            <span className="legend-submeta">{d.meta}</span>
+                            <DetailSummary
+                              detail={d}
+                              isOpen={expandedDetailKeys.has(d.key)}
+                              onToggle={() => toggleDetail(d.key)}
+                            />
                             {d.key !== "__other" && !d.key.startsWith("section:") && (
                               <DetailActions
                                 detail={d}
@@ -222,6 +245,51 @@ export function Donut({
         </ul>
       </div>
     </div>
+  );
+}
+
+function DetailSummary({
+  detail,
+  isOpen,
+  onToggle,
+}: {
+  detail: DonutSliceDetail;
+  isOpen: boolean;
+  onToggle: () => void;
+}) {
+  const canOpen = Boolean(detail.transactions?.length);
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`legend-detail-summary ${canOpen ? "clickable" : ""}`}
+        onClick={canOpen ? onToggle : undefined}
+        aria-expanded={canOpen ? isOpen : undefined}
+      >
+        <span className="legend-sublabel">{detail.label}</span>
+        <span className="legend-subvalue">{formatILS(detail.value)}</span>
+        <span className="legend-submeta">{detail.meta}</span>
+      </button>
+      {canOpen && isOpen && (
+        <ul className="legend-transaction-list">
+          {detail.transactions?.map((tx) => (
+            <li key={tx.id} className="legend-transaction-row">
+              <span className="legend-transaction-date">
+                {new Date(`${tx.date}T00:00:00`).toLocaleDateString("he-IL", {
+                  day: "numeric",
+                  month: "numeric",
+                  year: "2-digit",
+                })}
+              </span>
+              <span className="legend-transaction-merchant">{tx.merchant}</span>
+              <span className="legend-transaction-source">{tx.source === "card" ? "אשראי" : "בנק"}</span>
+              <span className="legend-transaction-amount">{formatILS(tx.amount)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 

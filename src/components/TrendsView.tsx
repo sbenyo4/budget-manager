@@ -47,6 +47,7 @@ interface FixedBreakdownRow {
   periodCount: number;
   average: number;
   share: number;
+  transactions: Transaction[];
   isOther?: boolean;
   oneTime?: boolean;
   oneTimeAuto?: boolean;
@@ -145,7 +146,10 @@ function fixedBreakdownFor(
   oneTimeKeys: Set<string> = new Set(),
   fixedKeys: Set<string> = new Set()
 ): FixedBreakdownRow[] {
-  const groups = new Map<string, { label: string; total: number; count: number; periodKeys: Set<string>; recurring: boolean }>();
+  const groups = new Map<
+    string,
+    { label: string; total: number; count: number; periodKeys: Set<string>; recurring: boolean; transactions: Transaction[] }
+  >();
 
   for (const tx of transactions) {
     if (tx.type === "income" || !isConsumption(tx) || tx.categoryMain !== category) continue;
@@ -160,10 +164,12 @@ function fixedBreakdownFor(
       count: 0,
       periodKeys: new Set<string>(),
       recurring: Boolean(customSection),
+      transactions: [],
     };
     group.total += tx.amount;
     group.count += 1;
     group.recurring = group.recurring || Boolean(tx.recurring);
+    group.transactions.push(tx);
     if (periodKey) group.periodKeys.add(periodKey);
     groups.set(key, group);
   }
@@ -192,6 +198,7 @@ function fixedBreakdownFor(
         periodCount: group.periodKeys.size,
         average: group.total / periodCount,
         share: total > 0 ? group.total / total : 0,
+        transactions: group.transactions,
         oneTime: true,
         oneTimeAuto: isAutoOneTime,
         fixedOverride: false,
@@ -206,6 +213,7 @@ function fixedBreakdownFor(
       periodCount: group.periodKeys.size,
       average: group.total / periodCount,
       share: total > 0 ? group.total / total : 0,
+      transactions: group.transactions,
       oneTime: isOneTime,
       oneTimeAuto: false,
       fixedOverride: isForcedFixed,
@@ -221,6 +229,7 @@ function fixedBreakdownFor(
       periodCount: 0,
       average: otherTotal / periodCount,
       share: total > 0 ? otherTotal / total : 0,
+      transactions: otherChildren.flatMap((child) => child.transactions),
       isOther: true,
       oneTime: true,
       oneTimeAuto: true,
@@ -272,6 +281,18 @@ function customSectionKey(category: string, key: string, label: string): string 
   return key.startsWith("section:") ? `section:${category}::${label}` : overrideKey(category, key);
 }
 
+function detailTransactions(txs: Transaction[]) {
+  return [...txs]
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .map((tx) => ({
+      id: tx.id,
+      date: tx.date,
+      merchant: tx.merchant,
+      amount: tx.amount,
+      source: tx.source,
+    }));
+}
+
 export function detailForBreakdownItem(
   item: FixedBreakdownRow,
   allItems: FixedBreakdownRow[],
@@ -287,6 +308,7 @@ export function detailForBreakdownItem(
     key: item.key,
     label: item.label,
     value: item.average,
+    transactions: detailTransactions(item.transactions),
     meta: `${Math.round(item.share * 100)}% · ${item.count} עסקאות${
       item.isOther ? " · לא קבוע" : ` · ${item.periodCount} תקופות`
     }`,
@@ -299,6 +321,7 @@ export function detailForBreakdownItem(
       key: child.key,
       label: child.label,
       value: child.average,
+      transactions: detailTransactions(child.transactions),
       meta: `${Math.round(child.share * 100)}% · ${child.count} עסקאות${
         child.periodCount > 0 ? ` · ${child.periodCount} תקופות` : ""
       }`,
@@ -382,6 +405,7 @@ export function TrendsView({ transactions, periods, bankBalance, preferences, on
           key: item.key,
           label: item.label,
           value: item.average,
+          transactions: detailTransactions(item.transactions),
           meta: `${Math.round(item.share * 100)}% · ${item.count} עסקאות${
             item.isOther ? " · לא קבוע" : ` · ${item.periodCount} תקופות`
           }`,
@@ -393,6 +417,7 @@ export function TrendsView({ transactions, periods, bankBalance, preferences, on
             key: child.key,
             label: child.label,
             value: child.average,
+            transactions: detailTransactions(child.transactions),
             meta: `${Math.round(child.share * 100)}% · ${child.count} עסקאות${
               child.periodCount > 0 ? ` · ${child.periodCount} תקופות` : ""
             }`,

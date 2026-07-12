@@ -816,6 +816,7 @@ h1 {
   grid-template-columns: minmax(0, 1fr) auto minmax(160px, 240px);
   grid-template-areas:
     "label value actions"
+    "tx tx actions"
     "meta meta actions";
   gap: 0 8px;
   align-items: center;
@@ -876,6 +877,82 @@ h1 {
 
 .legend-subrow.nested {
   color: var(--text-muted);
+}
+
+.legend-detail-summary {
+  display: contents;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+
+.legend-detail-summary.clickable {
+  cursor: pointer;
+}
+
+.legend-detail-summary.clickable .legend-sublabel {
+  text-decoration: underline;
+  text-decoration-color: var(--gridline);
+  text-underline-offset: 3px;
+}
+
+.legend-detail-summary.clickable:hover .legend-sublabel {
+  color: var(--text-primary);
+  text-decoration-color: var(--text-muted);
+}
+
+.legend-detail-summary.clickable .legend-sublabel::before {
+  content: "▸";
+  display: inline-block;
+  margin-inline-end: 5px;
+  color: var(--text-muted);
+}
+
+.legend-detail-summary.clickable[aria-expanded="true"] .legend-sublabel::before {
+  content: "▾";
+}
+
+.legend-transaction-list {
+  grid-area: tx;
+  list-style: none;
+  margin: 5px 0 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--gridline);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.02);
+  display: grid;
+  gap: 3px;
+}
+
+.legend-transaction-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 0.78rem;
+}
+
+.legend-transaction-date,
+.legend-transaction-source {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.legend-transaction-merchant {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legend-transaction-amount {
+  color: var(--text-primary);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .legend-sublabel {
