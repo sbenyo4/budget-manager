@@ -1,7 +1,7 @@
-import type { ApiRequest, ApiResponse } from "../_lib/http";
-import { readJson, sendJson } from "../_lib/http";
-import { createSessionToken, sessionCookie, tokenHash, verifyGoogleCredential } from "../_lib/auth";
-import { insertSession, upsertUser } from "../_lib/db";
+import type { ApiRequest, ApiResponse } from "../lib/http";
+import { readJson, sendJson } from "../lib/http";
+import { createSessionToken, sessionCookie, tokenHash, verifyGoogleCredential } from "../lib/auth";
+import { insertSession, upsertUser } from "../lib/db";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.method !== "POST") {
@@ -37,4 +37,3 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     sendJson(res, 401, { error: err instanceof Error ? err.message : String(err) });
   }
 }
-

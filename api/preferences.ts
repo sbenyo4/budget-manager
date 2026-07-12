@@ -1,7 +1,7 @@
-import type { ApiRequest, ApiResponse } from "./_lib/http";
-import { readJson, sendJson } from "./_lib/http";
-import { currentUser } from "./_lib/auth";
-import { getPreferences, upsertPreferences, type BudgetPreferences } from "./_lib/db";
+import type { ApiRequest, ApiResponse } from "./lib/http";
+import { readJson, sendJson } from "./lib/http";
+import { currentUser } from "./lib/auth";
+import { getPreferences, upsertPreferences, type BudgetPreferences } from "./lib/db";
 
 function normalizePreferences(body: Partial<BudgetPreferences>): BudgetPreferences {
   return {
@@ -39,4 +39,3 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
   }
 }
-

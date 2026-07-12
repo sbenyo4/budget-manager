@@ -1,6 +1,6 @@
-import type { ApiRequest, ApiResponse } from "../_lib/http";
-import { sendJson } from "../_lib/http";
-import { currentUser } from "../_lib/auth";
+import type { ApiRequest, ApiResponse } from "../lib/http";
+import { sendJson } from "../lib/http";
+import { currentUser } from "../lib/auth";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {
@@ -9,4 +9,3 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
   }
 }
-

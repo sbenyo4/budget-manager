@@ -1,6 +1,6 @@
-import type { ApiRequest, ApiResponse } from "./_lib/http";
-import { sendJson } from "./_lib/http";
-import { getAccounts, isOpenFinanceConfigured } from "./_lib/openFinance";
+import type { ApiRequest, ApiResponse } from "./lib/http";
+import { sendJson } from "./lib/http";
+import { getAccounts, isOpenFinanceConfigured } from "./lib/openFinance";
 
 export default async function handler(_req: ApiRequest, res: ApiResponse) {
   if (!isOpenFinanceConfigured()) {
@@ -14,4 +14,3 @@ export default async function handler(_req: ApiRequest, res: ApiResponse) {
     sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
   }
 }
-

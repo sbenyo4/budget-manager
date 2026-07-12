@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host localhost",
     "build": "tsc && vite build",
+    "migrate:preferences": "node scripts/migrate-preferences-to-neon.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

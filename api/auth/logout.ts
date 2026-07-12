@@ -1,7 +1,7 @@
-import type { ApiRequest, ApiResponse } from "../_lib/http";
-import { sendJson } from "../_lib/http";
-import { currentSessionToken, sessionCookie, tokenHash } from "../_lib/auth";
-import { deleteSession } from "../_lib/db";
+import type { ApiRequest, ApiResponse } from "../lib/http";
+import { sendJson } from "../lib/http";
+import { currentSessionToken, sessionCookie, tokenHash } from "../lib/auth";
+import { deleteSession } from "../lib/db";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.method !== "POST") {
@@ -20,4 +20,3 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
   }
 }
-
