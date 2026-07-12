@@ -122,8 +122,6 @@ function metricsFor(
   };
 }
 
-const RANGE_OPTIONS = [3, 6, 12] as const;
-
 const ALL_SERIES = [
   { key: "income", label: "הכנסות", color: "var(--cat-1)" },
   { key: "expense", label: "הוצאות", color: "var(--cat-8)" },
@@ -346,7 +344,9 @@ export function TrendsView({ transactions, periods, bankBalance, preferences, on
 
   // periods[0] is the running (partial) one — averages use complete periods only
   const completePeriods = periods.slice(1);
-  const chosen = range === "all" ? completePeriods : completePeriods.slice(0, range);
+  const rangeOptions = Array.from({ length: completePeriods.length }, (_, index) => index + 1);
+  const effectiveRange = range === "all" ? "all" : Math.min(range, completePeriods.length);
+  const chosen = effectiveRange === "all" ? completePeriods : completePeriods.slice(0, effectiveRange);
   const categorizedTransactions = applyCategoryOverrides(transactions, sectionOverrides);
 
   if (chosen.length === 0) {
@@ -531,10 +531,10 @@ export function TrendsView({ transactions, periods, bankBalance, preferences, on
         <label htmlFor="range-select">טווח:</label>
         <select
           id="range-select"
-          value={String(range)}
+          value={String(effectiveRange)}
           onChange={(e) => setRange(e.target.value === "all" ? "all" : Number(e.target.value))}
         >
-          {RANGE_OPTIONS.map((r) => (
+          {rangeOptions.map((r) => (
             <option key={r} value={r}>
               {r} תקופות אחרונות
             </option>
