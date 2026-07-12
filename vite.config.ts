@@ -4,8 +4,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Buffer } from "node:buffer";
 import { createHash, createPublicKey, randomBytes, verify as verifySignature } from "node:crypto";
 import { mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 /**
  * Server-side proxy for the open-finance.ai API.
@@ -20,6 +20,7 @@ import { DatabaseSync } from "node:sqlite";
 const TOKEN_URL = "https://api.open-finance.ai/oauth/token";
 const SESSION_COOKIE = "budget_session";
 const PREFS_DEFAULT = { sectionOverrides: {}, oneTimeExpenses: [], fixedExpenses: [] };
+const require = createRequire(import.meta.url);
 
 /**
  * Nothing is excluded here: bank transactions ARE the account state
@@ -173,6 +174,7 @@ function preferencesAuth(env: Record<string, string>): Plugin {
   const googleClientId = env.GOOGLE_CLIENT_ID ?? "";
   const secureCookie = env.NODE_ENV === "production" || env.SECURE_COOKIES === "true";
   const dbPath = env.BUDGET_DB_PATH || join(process.cwd(), ".data", "budget.sqlite");
+  const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   db.exec(`
@@ -490,10 +492,11 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
   };
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), "");
+  const devPlugins = command === "serve" ? [preferencesAuth(env), openFinanceProxy(env)] : [];
   return {
-    plugins: [react(), preferencesAuth(env), openFinanceProxy(env)],
+    plugins: [react(), ...devPlugins],
     server: {
       host: "localhost",
       port: 5175,
