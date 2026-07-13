@@ -19,7 +19,13 @@ import { dirname, join } from "node:path";
 
 const TOKEN_URL = "https://api.open-finance.ai/oauth/token";
 const SESSION_COOKIE = "budget_session";
-const PREFS_DEFAULT = { sectionOverrides: {}, oneTimeExpenses: [], fixedExpenses: [], highAmountThreshold: 5000 };
+const PREFS_DEFAULT = {
+  sectionOverrides: {},
+  oneTimeExpenses: [],
+  fixedExpenses: [],
+  highAmountThreshold: 5000,
+  theme: "light" as "light" | "dark",
+};
 const require = createRequire(import.meta.url);
 
 /**
@@ -114,6 +120,7 @@ function normalizeBudgetPreferences(body: Partial<typeof PREFS_DEFAULT>) {
     oneTimeExpenses: Array.isArray(body.oneTimeExpenses) ? body.oneTimeExpenses : [],
     fixedExpenses: Array.isArray(body.fixedExpenses) ? body.fixedExpenses : [],
     highAmountThreshold: Number.isFinite(threshold) && threshold >= 0 ? threshold : PREFS_DEFAULT.highAmountThreshold,
+    theme: body.theme === "dark" ? "dark" : "light",
   };
 }
 
@@ -239,6 +246,12 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       data TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS user_pins (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      salt TEXT NOT NULL,
+      pin_hash TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   const getUserBySession = db.prepare(`
@@ -270,6 +283,23 @@ function preferencesAuth(env: Record<string, string>): Plugin {
     VALUES (?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP
   `);
+  const getPinCredential = db.prepare("SELECT salt, pin_hash AS pinHash FROM user_pins WHERE user_id = ?");
+  const upsertPinCredential = db.prepare(`
+    INSERT INTO user_pins (user_id, salt, pin_hash, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id) DO UPDATE SET
+      salt = excluded.salt,
+      pin_hash = excluded.pin_hash,
+      updated_at = CURRENT_TIMESTAMP
+  `);
+
+  function pinHash(pin: string, salt: string): string {
+    return createHash("sha256").update(`${salt}:${pin}`).digest("hex");
+  }
+
+  function normalizePin(value: unknown): string {
+    return typeof value === "string" ? value.replace(/\D/g, "").slice(0, 4) : "";
+  }
 
   function currentUser(req: IncomingMessage) {
     const token = parseCookies(req)[SESSION_COOKIE];
@@ -366,6 +396,43 @@ function preferencesAuth(env: Record<string, string>): Plugin {
             const settings = normalizeServiceSettings(JSON.parse(raw));
             upsertServiceSettings.run(user.id, JSON.stringify(settings));
             sendJson(res, 200, settings);
+          })
+          .catch((err: unknown) => sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) }));
+        return;
+      }
+    }
+
+    if (url.pathname === "/api/pin") {
+      const user = currentUser(req);
+      if (!user) {
+        sendJson(res, 401, { error: "AUTH_REQUIRED" });
+        return;
+      }
+      if (req.method === "GET") {
+        sendJson(res, 200, { hasPin: Boolean(getPinCredential.get(user.id)) });
+        return;
+      }
+      if (req.method === "PUT") {
+        readBody(req)
+          .then((raw) => {
+            const pin = normalizePin(JSON.parse(raw).pin);
+            if (pin.length !== 4) {
+              sendJson(res, 400, { error: "PIN_MUST_BE_4_DIGITS" });
+              return;
+            }
+            const salt = randomBytes(16).toString("hex");
+            upsertPinCredential.run(user.id, salt, pinHash(pin, salt));
+            sendJson(res, 200, { ok: true });
+          })
+          .catch((err: unknown) => sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) }));
+        return;
+      }
+      if (req.method === "POST") {
+        readBody(req)
+          .then((raw) => {
+            const pin = normalizePin(JSON.parse(raw).pin);
+            const stored = getPinCredential.get(user.id) as { salt: string; pinHash: string } | undefined;
+            sendJson(res, 200, { ok: Boolean(stored && pin.length === 4 && pinHash(pin, stored.salt) === stored.pinHash) });
           })
           .catch((err: unknown) => sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) }));
         return;

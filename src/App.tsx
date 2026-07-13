@@ -10,23 +10,23 @@ import {
   logout,
   savePreferences,
   saveServiceSettings,
+  getPinStatus,
+  setupPin,
+  verifyPin,
   type AuthUser,
   type BudgetPreferences,
   type ServiceSettings,
 } from "./api/preferences";
 import { buildPeriods, tagSalaries } from "./logic/periods";
-import { applyCategoryOverrides, hasLegacyPreferences, readLegacyPreferences } from "./logic/categoryOverrides";
+import { applyCategoryOverrides } from "./logic/categoryOverrides";
 import type { Transaction } from "./types";
 import { MonthlyView } from "./components/MonthlyView";
 import { TrendsView } from "./components/TrendsView";
 
 const YEAR = 2026;
 type ThemeMode = "light" | "dark";
-const THEME_STORAGE_KEY = "budget-manager-theme";
 
 function readInitialTheme(): ThemeMode {
-  const stored = localStorage.getItem(THEME_STORAGE_KEY);
-  if (stored === "light" || stored === "dark") return stored;
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
@@ -74,53 +74,8 @@ function isoDaysAgo(days: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-interface StoredPin {
-  salt: string;
-  hash: string;
-}
-
-const PIN_STORAGE_PREFIX = "budget-manager-pin:";
-
-function pinStorageKey(userId: string): string {
-  return `${PIN_STORAGE_PREFIX}${userId}`;
-}
-
 function normalizePin(value: string): string {
   return value.replace(/\D/g, "").slice(0, 4);
-}
-
-function toHex(bytes: ArrayBuffer | Uint8Array): string {
-  return Array.from(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-async function hashPin(pin: string, salt: string): Promise<string> {
-  const data = new TextEncoder().encode(`${salt}:${pin}`);
-  return toHex(await crypto.subtle.digest("SHA-256", data));
-}
-
-function readStoredPin(userId: string): StoredPin | null {
-  const raw = localStorage.getItem(pinStorageKey(userId));
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<StoredPin>;
-    return typeof parsed.salt === "string" && typeof parsed.hash === "string"
-      ? { salt: parsed.salt, hash: parsed.hash }
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-async function saveStoredPin(userId: string, pin: string): Promise<void> {
-  const salt = toHex(crypto.getRandomValues(new Uint8Array(16)));
-  localStorage.setItem(pinStorageKey(userId), JSON.stringify({ salt, hash: await hashPin(pin, salt) }));
-}
-
-async function verifyStoredPin(userId: string, pin: string): Promise<boolean> {
-  const stored = readStoredPin(userId);
-  return stored ? (await hashPin(pin, stored.salt)) === stored.hash : false;
 }
 
 interface ErrorBoundaryState {
@@ -182,7 +137,6 @@ function BudgetApp() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
   useEffect(() => {
@@ -194,7 +148,13 @@ function BudgetApp() {
       setPinGate("checking");
       return;
     }
-    setPinGate(readStoredPin(user.id) ? "locked" : "setup");
+    setPinGate("checking");
+    getPinStatus()
+      .then(({ hasPin }) => setPinGate(hasPin ? "locked" : "setup"))
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setPinGate("setup");
+      });
   }, [user]);
 
   useEffect(() => {
@@ -269,18 +229,7 @@ function BudgetApp() {
   }, []);
 
   const migratePreferencesIfNeeded = useCallback((loaded: BudgetPreferences): Promise<BudgetPreferences> => {
-    const legacy = readLegacyPreferences();
-    const loadedIsEmpty =
-      Object.keys(loaded.sectionOverrides).length === 0 &&
-      loaded.oneTimeExpenses.length === 0 &&
-      loaded.fixedExpenses.length === 0;
-    if (!loadedIsEmpty || !hasLegacyPreferences(legacy)) return Promise.resolve(loaded);
-    return savePreferences({
-      sectionOverrides: legacy.sectionOverrides,
-      oneTimeExpenses: legacy.oneTimeExpenses,
-      fixedExpenses: legacy.fixedExpenses,
-      highAmountThreshold: loaded.highAmountThreshold,
-    });
+    return Promise.resolve(loaded);
   }, []);
 
   const handleLogin = useCallback((nextUser: AuthUser, nextPrefs: BudgetPreferences) => {
@@ -288,7 +237,10 @@ function BudgetApp() {
     setUser(nextUser);
     setPreferencesLoading(false);
     migratePreferencesIfNeeded(nextPrefs)
-      .then(setPreferences)
+      .then((saved) => {
+        setPreferences(saved);
+        setTheme(saved.theme);
+      })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
   }, [migratePreferencesIfNeeded]);
 
@@ -345,16 +297,29 @@ function BudgetApp() {
     return (
       <div className="app">
         <section className="login-panel">
-          <h1>Budget Manager</h1>
-          <p className="subtitle">התחברות לחשבון מאפשרת לשמור סיווגים והעדפות בין ביקורים.</p>
+          <div className="login-brand">
+            <span className="login-mark" aria-hidden>
+              ₪
+            </span>
+            <span className="login-kicker">Budget Manager</span>
+          </div>
+          <h1>כניסה לתקציב שלך</h1>
+          <p className="subtitle">ניהול הכנסות, הוצאות, מגמות והגדרות אישיות בחשבון מאובטח אחד.</p>
+          <div className="login-card-actions">
+            <GoogleLoginButton
+              clientId={googleClientId}
+              onLogin={handleLogin}
+              onError={handleAuthError}
+            />
+          </div>
+          <div className="login-assurance" aria-label="אבטחה ושמירה">
+            <span>Google Login</span>
+            <span>PIN אישי</span>
+            <span>שמירה ב-DB</span>
+          </div>
           <p className="auth-origin-hint">
-            יש להוסיף ב-Google OAuth את ה-origin הזה: <code>{window.location.origin}</code>
+            Origin נוכחי: <code>{window.location.origin}</code>
           </p>
-          <GoogleLoginButton
-            clientId={googleClientId}
-            onLogin={handleLogin}
-            onError={handleAuthError}
-          />
           {error && <div className="error-box">שגיאה: {error}</div>}
         </section>
       </div>
@@ -406,7 +371,11 @@ function BudgetApp() {
               type="button"
               aria-label={theme === "dark" ? "מעבר למצב בהיר" : "מעבר למצב כהה"}
               title={theme === "dark" ? "מצב בהיר" : "מצב כהה"}
-              onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+              onClick={() => {
+                const nextTheme = theme === "dark" ? "light" : "dark";
+                setTheme(nextTheme);
+                updatePreferences({ ...preferences, theme: nextTheme });
+              }}
             >
               {theme === "dark" ? (
                 <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
@@ -663,7 +632,7 @@ function PinGate({
     let cancelled = false;
     setSubmitting(true);
     setMessage("");
-    const action = isSetup ? saveStoredPin(user.id, pin).then(() => true) : verifyStoredPin(user.id, pin);
+    const action = isSetup ? setupPin(pin).then(() => true) : verifyPin(pin).then(({ ok }) => ok);
     action
       .then((ok) => {
         if (cancelled) return;
@@ -685,7 +654,7 @@ function PinGate({
     return () => {
       cancelled = true;
     };
-  }, [confirmPin, isSetup, mode, onUnlock, pin, user.id]);
+  }, [confirmPin, isSetup, mode, onUnlock, pin]);
 
   if (mode === "checking") {
     return <div className="app"><div className="loading">בודק PIN…</div></div>;

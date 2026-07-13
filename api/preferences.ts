@@ -11,6 +11,7 @@ function normalizePreferences(body: Partial<BudgetPreferences>): BudgetPreferenc
     oneTimeExpenses: Array.isArray(body.oneTimeExpenses) ? body.oneTimeExpenses : [],
     fixedExpenses: Array.isArray(body.fixedExpenses) ? body.fixedExpenses : [],
     highAmountThreshold: Number.isFinite(threshold) && threshold >= 0 ? threshold : 5000,
+    theme: body.theme === "dark" ? "dark" : "light",
   };
 }
 

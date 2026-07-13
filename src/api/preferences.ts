@@ -10,6 +10,7 @@ export interface BudgetPreferences {
   oneTimeExpenses: string[];
   fixedExpenses: string[];
   highAmountThreshold: number;
+  theme: "light" | "dark";
 }
 
 export interface ServiceSettings {
@@ -24,6 +25,7 @@ export const emptyPreferences: BudgetPreferences = {
   oneTimeExpenses: [],
   fixedExpenses: [],
   highAmountThreshold: 5000,
+  theme: "light",
 };
 
 export const emptyServiceSettings: ServiceSettings = {
@@ -94,5 +96,23 @@ export function saveServiceSettings(settings: ServiceSettings): Promise<ServiceS
   return apiJson("/api/service-settings", {
     method: "PUT",
     body: JSON.stringify(settings),
+  });
+}
+
+export function getPinStatus(): Promise<{ hasPin: boolean }> {
+  return apiJson("/api/pin");
+}
+
+export function setupPin(pin: string): Promise<{ ok: true }> {
+  return apiJson("/api/pin", {
+    method: "PUT",
+    body: JSON.stringify({ pin }),
+  });
+}
+
+export function verifyPin(pin: string): Promise<{ ok: boolean }> {
+  return apiJson("/api/pin", {
+    method: "POST",
+    body: JSON.stringify({ pin }),
   });
 }

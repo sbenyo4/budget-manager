@@ -12,6 +12,7 @@ export interface BudgetPreferences {
   oneTimeExpenses: string[];
   fixedExpenses: string[];
   highAmountThreshold: number;
+  theme: "light" | "dark";
 }
 
 export interface ServiceSettings {
@@ -26,6 +27,7 @@ export const PREFS_DEFAULT: BudgetPreferences = {
   oneTimeExpenses: [],
   fixedExpenses: [],
   highAmountThreshold: 5000,
+  theme: "light",
 };
 
 export const SERVICE_SETTINGS_DEFAULT: ServiceSettings = {
@@ -76,6 +78,14 @@ export function ensureSchema(): Promise<void> {
         CREATE TABLE IF NOT EXISTS service_settings (
         user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
         data JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+      `,
+      db`
+        CREATE TABLE IF NOT EXISTS user_pins (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        salt TEXT NOT NULL,
+        pin_hash TEXT NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
       `,
@@ -162,6 +172,29 @@ export async function upsertServiceSettings(userId: string, settings: ServiceSet
     VALUES (${userId}, ${JSON.stringify(settings)}::jsonb, NOW())
     ON CONFLICT (user_id) DO UPDATE SET
       data = EXCLUDED.data,
+      updated_at = NOW()
+  `;
+}
+
+export async function getPinCredential(userId: string): Promise<{ salt: string; pinHash: string } | null> {
+  await ensureSchema();
+  const rows = (await sql()`
+    SELECT salt, pin_hash AS "pinHash"
+    FROM user_pins
+    WHERE user_id = ${userId}
+    LIMIT 1
+  `) as Array<{ salt: string; pinHash: string }>;
+  return rows[0] ?? null;
+}
+
+export async function upsertPinCredential(userId: string, salt: string, pinHash: string): Promise<void> {
+  await ensureSchema();
+  await sql()`
+    INSERT INTO user_pins (user_id, salt, pin_hash, updated_at)
+    VALUES (${userId}, ${salt}, ${pinHash}, NOW())
+    ON CONFLICT (user_id) DO UPDATE SET
+      salt = EXCLUDED.salt,
+      pin_hash = EXCLUDED.pin_hash,
       updated_at = NOW()
   `;
 }

@@ -139,30 +139,15 @@ const RECURRING_MERCHANT_PATTERNS = [
 const BRAND_MATCH_TOKENS = ["spotify", "ספוטיפיי", "netflix", "נטפליקס", "openai", "chatgpt", "icloud"];
 
 export function loadSectionOverrides(): SectionOverrides {
-  try {
-    const raw = window.localStorage.getItem(SECTION_OVERRIDES_KEY);
-    return raw ? normalizeSectionOverrides(JSON.parse(raw) as SectionOverrides) : {};
-  } catch {
-    return {};
-  }
+  return {};
 }
 
 export function loadOneTimeExpenses(): Set<string> {
-  try {
-    const raw = window.localStorage.getItem(ONE_TIME_EXPENSES_KEY);
-    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
-  } catch {
-    return new Set();
-  }
+  return new Set();
 }
 
 export function loadFixedExpenses(): Set<string> {
-  try {
-    const raw = window.localStorage.getItem(FIXED_EXPENSES_KEY);
-    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
-  } catch {
-    return new Set();
-  }
+  return new Set();
 }
 
 export function readLegacyPreferences(): LegacyPreferences {
@@ -231,12 +216,6 @@ function canonicalCategoryKey(labelOrKey: string): string | undefined {
   return Object.entries(MAIN_LABELS).find(
     ([key, label]) => key.toLowerCase() === normalized || label.trim().toLowerCase() === normalized
   )?.[0];
-}
-
-function normalizeSectionOverrides(overrides: SectionOverrides): SectionOverrides {
-  return Object.fromEntries(
-    Object.entries(overrides).map(([key, value]) => [key, normalizeCategoryKey(value)])
-  );
 }
 
 export function defaultCategoryForMerchant(merchant: string): string | undefined {
