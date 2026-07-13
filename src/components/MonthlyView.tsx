@@ -37,6 +37,30 @@ function sliceByMain(txs: Transaction[]): DonutSlice[] {
 
 const sum = (txs: Transaction[]) => txs.reduce((s, t) => s + t.amount, 0);
 
+function normalizeSearchText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function txMatchesSearch(tx: Transaction, query: string): boolean {
+  if (!query) return true;
+  const date = new Date(`${tx.date}T00:00:00`).toLocaleDateString("he-IL", {
+    day: "numeric",
+    month: "numeric",
+    year: "2-digit",
+  });
+  const values = [
+    tx.date,
+    date,
+    tx.merchant,
+    categoryLabel(tx.categoryMain),
+    displaySubLabel(tx.categorySub),
+    tx.source === "card" ? "אשראי" : "בנק",
+    tx.type === "income" ? "הכנסה" : "הוצאה",
+    String(tx.amount),
+  ];
+  return normalizeSearchText(values.join(" ")).includes(query);
+}
+
 export function MonthlyView({
   transactions,
   periods,
@@ -46,6 +70,7 @@ export function MonthlyView({
 }: Props) {
   const [periodKey, setPeriodKey] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const sectionOverrides = preferences.sectionOverrides;
   const oneTimeExpenses = useMemo(() => new Set(preferences.oneTimeExpenses), [preferences.oneTimeExpenses]);
   const highAmountThreshold = preferences.highAmountThreshold;
@@ -165,9 +190,14 @@ export function MonthlyView({
     }
     return byCategory;
   }, [sortedInPeriod]);
-  const listed = useMemo(
+  const categoryListed = useMemo(
     () => (categoryFilter ? listedByCategory.get(categoryFilter) ?? [] : sortedInPeriod),
     [categoryFilter, listedByCategory, sortedInPeriod]
+  );
+  const normalizedSearchQuery = useMemo(() => normalizeSearchText(searchQuery), [searchQuery]);
+  const listed = useMemo(
+    () => categoryListed.filter((tx) => txMatchesSearch(tx, normalizedSearchQuery)),
+    [categoryListed, normalizedSearchQuery]
   );
 
   const categorizeMerchant = useCallback((tx: Transaction, category: string) => {
@@ -214,6 +244,7 @@ export function MonthlyView({
           onChange={(e) => {
             setPeriodKey(e.target.value);
             setCategoryFilter(null);
+            setSearchQuery("");
           }}
         >
           {periods.map((p) => (
@@ -235,9 +266,15 @@ export function MonthlyView({
             </option>
           ))}
         </select>
-        <span className="period-hint">
-          {period.salaryBased ? "ממשכורת עד המשכורת הבאה" : "חודש קלנדרי (לא זוהתה משכורת)"}
-        </span>
+        <label htmlFor="monthly-search">חיפוש:</label>
+        <input
+          id="monthly-search"
+          className="monthly-search"
+          type="search"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="חיפוש חופשי"
+        />
       </div>
 
       {categoryFilter && (
@@ -341,9 +378,16 @@ export function MonthlyView({
           <h2>
             פירוט תנועות
             {categoryFilter && <span className="filter-tag"> · {categoryLabel(categoryFilter)}</span>}
+            {searchQuery.trim() && <span className="filter-tag"> · "{searchQuery.trim()}"</span>}
           </h2>
-          {categoryFilter && (
-            <button className="table-toggle" onClick={() => setCategoryFilter(null)}>
+          {(categoryFilter || searchQuery.trim()) && (
+            <button
+              className="table-toggle"
+              onClick={() => {
+                setCategoryFilter(null);
+                setSearchQuery("");
+              }}
+            >
               ניקוי סינון ✕
             </button>
           )}

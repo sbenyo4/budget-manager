@@ -1029,6 +1029,17 @@ h1 {
   min-width: 240px;
 }
 
+.monthly-search {
+  width: min(100%, 360px);
+  flex: 1 1 260px;
+  font: inherit;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+
 .scope-toggle {
   display: inline-flex;
   padding: 2px;
