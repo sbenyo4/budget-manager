@@ -4,7 +4,6 @@ import {
   emptyServiceSettings,
   emptyPreferences,
   getAuthConfig,
-  getCurrentUser,
   loadPreferences,
   loadServiceSettings,
   loginWithGoogle,
@@ -41,6 +40,20 @@ function isMissingServiceSettingsError(error: unknown): boolean {
     message.includes("page could not be found") ||
     message.includes("/api/service-settings")
   );
+}
+
+function serviceSettingsSaveErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    message === "AUTH_REQUIRED" ||
+    message.includes("AUTH_REQUIRED") ||
+    message.includes("NOT_FOUND") ||
+    message.includes("page could not be found") ||
+    message.includes("/api/service-settings")
+  ) {
+    return "לא ניתן לשמור הגדרות. יש להתחבר שוב עם Google ולוודא שהפריסה האחרונה ב-Vercel כוללת את נתיב ההגדרות.";
+  }
+  return message;
 }
 
 declare global {
@@ -185,15 +198,10 @@ function BudgetApp() {
   }, [user]);
 
   useEffect(() => {
-    Promise.all([getAuthConfig(), getCurrentUser()])
-      .then(([config, auth]) => {
+    getAuthConfig()
+      .then((config) => {
         setGoogleClientId(config.googleClientId);
-        setUser(auth.user);
-        if (!auth.user) {
-          setPreferencesLoading(false);
-          return;
-        }
-        return loadPreferences().then(migratePreferencesIfNeeded).then(setPreferences);
+        setUser(null);
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => {
@@ -315,7 +323,9 @@ function BudgetApp() {
       })
       .catch((err: unknown) => {
         setSaveState("error");
-        setError(err instanceof Error ? err.message : String(err));
+        const message = serviceSettingsSaveErrorMessage(err);
+        setError(message);
+        throw new Error(message);
       });
   }, [preferences]);
 
