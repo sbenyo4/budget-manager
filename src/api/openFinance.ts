@@ -44,7 +44,10 @@ export interface FetchResult {
  */
 export async function fetchTransactions(from: string, to: string): Promise<FetchResult> {
   const status = await fetch("/api/status")
-    .then((r) => r.json() as Promise<{ configured: boolean }>)
+    .then(async (r) => {
+      if (!r.ok) return { configured: false };
+      return (await r.json()) as { configured: boolean };
+    })
     .catch(() => ({ configured: false }));
 
   if (!status.configured) {
@@ -53,8 +56,26 @@ export async function fetchTransactions(from: string, to: string): Promise<Fetch
 
   const res = await fetch(`/api/transactions?from=${from}&to=${to}`);
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `HTTP ${res.status}`);
+    const text = await res.text();
+    let message = text || `HTTP ${res.status}`;
+    try {
+      const body = JSON.parse(text) as { error?: string };
+      message = body.error ?? message;
+    } catch {
+      // Keep the raw message for Vercel function errors.
+    }
+    if (
+      res.status === 401 ||
+      res.status === 404 ||
+      res.status === 503 ||
+      message === "AUTH_REQUIRED" ||
+      message === "NOT_CONFIGURED" ||
+      message.includes("NOT_FOUND") ||
+      message.includes("page could not be found")
+    ) {
+      throw new Error("SERVICE_SETTINGS_REQUIRED");
+    }
+    throw new Error(message);
   }
   return { transactions: (await res.json()) as Transaction[], demo: false };
 }

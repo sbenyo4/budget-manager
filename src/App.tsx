@@ -31,6 +31,18 @@ function readInitialTheme(): ThemeMode {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function isMissingServiceSettingsError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message === "SERVICE_SETTINGS_REQUIRED" ||
+    message === "NOT_CONFIGURED" ||
+    message === "AUTH_REQUIRED" ||
+    message.includes("NOT_FOUND") ||
+    message.includes("page could not be found") ||
+    message.includes("/api/service-settings")
+  );
+}
+
 declare global {
   interface Window {
     google?: {
@@ -223,7 +235,15 @@ function BudgetApp() {
     if (!user || pinGate !== "unlocked") return;
     loadServiceSettings()
       .then(setServiceSettings)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+      .catch((err: unknown) => {
+        if (isMissingServiceSettingsError(err)) {
+          setServiceSettings(emptyServiceSettings);
+          setServiceSettingsRequired(true);
+          setSettingsOpen(true);
+          return;
+        }
+        setError(err instanceof Error ? err.message : String(err));
+      });
   }, [pinGate, user]);
 
   const updatePreferences = useCallback((next: BudgetPreferences) => {
