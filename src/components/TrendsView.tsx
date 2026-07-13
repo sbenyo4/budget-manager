@@ -74,6 +74,30 @@ function expenseScopeLabel(expenseScope: ExpenseScope): string {
   return "כולל קבועות וחד פעמיות";
 }
 
+function normalizeSearchText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function trendTxMatchesSearch(tx: Transaction, query: string): boolean {
+  if (!query) return true;
+  const date = new Date(`${tx.date}T00:00:00`).toLocaleDateString("he-IL", {
+    day: "numeric",
+    month: "numeric",
+    year: "2-digit",
+  });
+  const values = [
+    tx.date,
+    date,
+    tx.merchant,
+    categoryLabel(tx.categoryMain),
+    subLabel(tx.categorySub),
+    tx.source === "card" ? "אשראי" : "בנק",
+    tx.type === "income" ? "הכנסה" : "הוצאה",
+    String(tx.amount),
+  ];
+  return normalizeSearchText(values.join(" ")).includes(query);
+}
+
 function isRepeatVariableGroup(group: { count: number; periodKeys: Set<string> }): boolean {
   return group.periodKeys.size >= 2 || group.count >= 2;
 }
@@ -364,6 +388,9 @@ export function TrendsView({
   const fixedExpenses = useMemo(() => new Set(preferences.fixedExpenses), [preferences.fixedExpenses]);
   const highAmountThreshold = preferences.highAmountThreshold;
   const [expenseScope, setExpenseScope] = useState<ExpenseScope>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const normalizedSearchQuery = useMemo(() => normalizeSearchText(searchQuery), [searchQuery]);
+  const isSearchActive = normalizedSearchQuery.length > 0;
 
   // periods[0] is the running (partial) one — averages use complete periods only
   const completePeriods = useMemo(() => periods.slice(1), [periods]);
@@ -373,35 +400,42 @@ export function TrendsView({
   );
   const effectiveRange = range === "all" ? "all" : Math.min(range, completePeriods.length);
   const chosen = useMemo(
-    () => (effectiveRange === "all" ? completePeriods : completePeriods.slice(0, effectiveRange)),
-    [completePeriods, effectiveRange]
+    () => (isSearchActive || effectiveRange === "all" ? completePeriods : completePeriods.slice(0, effectiveRange)),
+    [completePeriods, effectiveRange, isSearchActive]
   );
   const categorizedTransactions = transactions;
+  const searchedTransactions = useMemo(
+    () =>
+      isSearchActive
+        ? categorizedTransactions.filter((tx) => trendTxMatchesSearch(tx, normalizedSearchQuery))
+        : categorizedTransactions,
+    [categorizedTransactions, isSearchActive, normalizedSearchQuery]
+  );
 
   // category options: consumption mains seen in the chosen span, largest first
   const rangeFrom = chosen[chosen.length - 1]?.from ?? "";
   const rangeTo = chosen[0]?.to ?? "";
   const fixedExpenseKeys = useMemo(
-    () => fixedExpenseKeysFor(categorizedTransactions, chosen, rangeFrom, rangeTo, oneTimeExpenses, fixedExpenses),
-    [categorizedTransactions, chosen, fixedExpenses, oneTimeExpenses, rangeFrom, rangeTo]
+    () => fixedExpenseKeysFor(searchedTransactions, chosen, rangeFrom, rangeTo, oneTimeExpenses, fixedExpenses),
+    [searchedTransactions, chosen, fixedExpenses, oneTimeExpenses, rangeFrom, rangeTo]
   );
   const rows = useMemo(
     () =>
       chosen
-        .map((p) => metricsFor(categorizedTransactions, p, category, excludedCategories, expenseScope, fixedExpenseKeys))
+        .map((p) => metricsFor(searchedTransactions, p, category, excludedCategories, expenseScope, fixedExpenseKeys))
         .reverse(),
-    [categorizedTransactions, category, chosen, excludedCategories, expenseScope, fixedExpenseKeys]
+    [searchedTransactions, category, chosen, excludedCategories, expenseScope, fixedExpenseKeys]
   ); // oldest → newest
   const allCatTotals = useMemo(() => {
     const totalsByCategory = new Map<string, number>();
-    for (const t of categorizedTransactions) {
+    for (const t of searchedTransactions) {
       if (t.type === "income" || !isConsumption(t)) continue;
       if (t.date < rangeFrom || t.date > rangeTo) continue;
       if (!isInExpenseScope(t, expenseScope, fixedExpenseKeys)) continue;
       totalsByCategory.set(t.categoryMain, (totalsByCategory.get(t.categoryMain) ?? 0) + t.amount);
     }
     return totalsByCategory;
-  }, [categorizedTransactions, expenseScope, fixedExpenseKeys, rangeFrom, rangeTo]);
+  }, [searchedTransactions, expenseScope, fixedExpenseKeys, rangeFrom, rangeTo]);
   const sortedCategoryTotals = useMemo(
     () => [...allCatTotals.entries()].sort((a, b) => b[1] - a[1]),
     [allCatTotals]
@@ -415,7 +449,7 @@ export function TrendsView({
   const expandedBreakdown = useMemo(() => {
     if (!expandedCategory) return null;
     const breakdown = fixedBreakdownFor(
-      categorizedTransactions,
+      searchedTransactions,
       chosen,
       expandedCategory,
       rangeFrom,
@@ -429,7 +463,7 @@ export function TrendsView({
       : expenseScope === "variable"
         ? breakdown.filter((item) => item.isOther)
         : breakdown;
-  }, [categorizedTransactions, chosen, expandedCategory, expenseScope, fixedExpenses, oneTimeExpenses, rangeFrom, rangeTo]);
+  }, [searchedTransactions, chosen, expandedCategory, expenseScope, fixedExpenses, oneTimeExpenses, rangeFrom, rangeTo]);
   const categoryAverageSlices: DonutSlice[] = useMemo(
     () =>
       sortedCategoryTotals.map(([key, total]) => ({
@@ -618,6 +652,20 @@ export function TrendsView({
             </option>
           ))}
         </select>
+        <label htmlFor="trend-search">חיפוש:</label>
+        <input
+          id="trend-search"
+          className="trend-search"
+          type="search"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="חיפוש בכל התקופות"
+        />
+        {isSearchActive && (
+          <button type="button" className="table-toggle" onClick={() => setSearchQuery("")}>
+            ניקוי חיפוש
+          </button>
+        )}
         <div className="scope-toggle" role="group" aria-label="סינון הוצאות">
           <button
             type="button"
@@ -643,6 +691,7 @@ export function TrendsView({
         </div>
         <span className="period-hint">
           {n} תקופות שלמות · {expenseScopeLabel(expenseScope)}
+          {isSearchActive ? " · חיפוש בכל התקופות" : ""}
         </span>
       </div>
 

@@ -1029,7 +1029,8 @@ h1 {
   min-width: 240px;
 }
 
-.monthly-search {
+.monthly-search,
+.trend-search {
   width: min(100%, 360px);
   flex: 1 1 260px;
   font: inherit;
