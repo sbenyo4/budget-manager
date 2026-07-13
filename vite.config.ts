@@ -74,6 +74,8 @@ interface RawTransaction {
   merchantName?: string;
   category?: { main?: string; sub?: string };
   status?: string;
+  installments?: { number?: number; total?: number };
+  isCreditCardInstallment?: boolean;
 }
 
 interface GooglePayload {
@@ -548,17 +550,23 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     return raw.amount?.chargedAmount?.amount ?? raw.amount?.originalAmount?.amount ?? 0;
   }
 
+  function isCardInstallment(raw: RawTransaction): boolean {
+    return Boolean(raw.isCreditCardInstallment || raw.installments);
+  }
+
   function normalize(raw: RawTransaction, index: number, source: "bank" | "card") {
     const date =
       source === "card"
-        ? raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? ""
+        ? isCardInstallment(raw)
+          ? raw.date?.valueDate ?? raw.date?.transactionDate ?? raw.date?.bookingDate ?? ""
+          : raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? ""
         : raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? "";
 
     return {
       id: raw.id ? `${source}:${raw.id}` : `${source}-tx-${index}`,
       source,
-      // Use the purchase/transaction date for cards. valueDate is the billing
-      // date and can make unrelated card purchases look like duplicates.
+      // Use purchase date for regular card purchases. Installments use the
+      // billing date so each monthly charge lands in the right month.
       date,
       merchant: raw.merchantName || raw.description?.description || "לא ידוע",
       amount: Math.abs(rawAmount(raw)),
@@ -650,7 +658,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
           const flows = [
             ...bank.map((raw, i) => normalize(raw, i, "bank")),
             ...card.map((raw, i) => normalize(raw, i, "card")),
-          ].filter((tx) => tx.date && tx.amount > 0);
+          ].filter((tx) => tx.date && tx.date >= from && tx.date <= to && tx.amount > 0);
           sendJson(res, 200, flows);
         })
         .catch((err: unknown) => {

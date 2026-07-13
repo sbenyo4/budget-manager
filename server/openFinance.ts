@@ -30,6 +30,8 @@ interface RawTransaction {
   merchantName?: string;
   category?: { main?: string; sub?: string };
   status?: string;
+  installments?: { number?: number; total?: number };
+  isCreditCardInstallment?: boolean;
 }
 
 interface NormalizedTransaction {
@@ -113,6 +115,10 @@ function normalizeDate(value: string): string {
   return value.slice(0, 10);
 }
 
+function isCardInstallment(raw: RawTransaction): boolean {
+  return Boolean(raw.isCreditCardInstallment || raw.installments);
+}
+
 function dedupeTransactions(transactions: NormalizedTransaction[]): PublicTransaction[] {
   const seen = new Set<string>();
   const unique: PublicTransaction[] = [];
@@ -130,7 +136,9 @@ function dedupeTransactions(transactions: NormalizedTransaction[]): PublicTransa
 function normalize(raw: RawTransaction, index: number, source: "bank" | "card"): NormalizedTransaction {
   const rawDate =
     source === "card"
-      ? raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? ""
+      ? isCardInstallment(raw)
+        ? raw.date?.valueDate ?? raw.date?.transactionDate ?? raw.date?.bookingDate ?? ""
+        : raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? ""
       : raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? "";
   const amount = rawAmount(raw);
 
@@ -164,7 +172,7 @@ export async function getTransactions(settings: ServiceSettings, from: string, t
   const normalized = [
     ...bank.map((raw, i) => normalize(raw, i, "bank")),
     ...card.map((raw, i) => normalize(raw, i, "card")),
-  ].filter((tx) => tx.date && tx.amount > 0);
+  ].filter((tx) => tx.date && tx.date >= from && tx.date <= to && tx.amount > 0);
   return dedupeTransactions(normalized);
 }
 

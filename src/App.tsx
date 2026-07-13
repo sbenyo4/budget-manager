@@ -4,7 +4,6 @@ import {
   emptyServiceSettings,
   emptyPreferences,
   getAuthConfig,
-  getCurrentUser,
   loadPreferences,
   loadServiceSettings,
   loginWithGoogle,
@@ -161,22 +160,19 @@ function BudgetApp() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([getAuthConfig(), getCurrentUser()])
-      .then(([config, current]) => {
+    getAuthConfig()
+      .then(async (config) => {
         if (cancelled) return;
         setGoogleClientId(config.googleClientId);
-        if (!current.user) {
-          setUser(null);
-          setPreferencesLoading(false);
-          return;
-        }
-        setUser(current.user);
-        return loadPreferences().then((loaded) => {
-          if (cancelled) return;
-          setPreferences(loaded);
-          setTheme(loaded.theme);
-          setPreferencesLoading(false);
-        });
+        await logout().catch(() => undefined);
+        if (cancelled) return;
+        setUser(null);
+        setPinGate("checking");
+        setPreferences(emptyPreferences);
+        setServiceSettings(emptyServiceSettings);
+        setAllTransactions([]);
+        setBankBalance(null);
+        setPreferencesLoading(false);
       })
       .catch((err: unknown) => {
         if (cancelled) return;

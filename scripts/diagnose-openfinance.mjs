@@ -70,6 +70,9 @@ do {
       status: raw.status ?? null,
       category: raw.category ?? null,
       additionalInfo: raw.description?.additionalInfo ?? null,
+      description: raw.description ?? null,
+      installment: raw.installment ?? raw.installments ?? raw.payment ?? raw.payments ?? null,
+      rawKeys: Object.keys(raw).sort(),
     });
   }
   nextPage = body.nextPage ?? undefined;
