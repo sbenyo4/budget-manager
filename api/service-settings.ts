@@ -1,11 +1,11 @@
-import type { ApiRequest, ApiResponse } from "./lib/http.js";
-import { readJson, sendJson } from "./lib/http.js";
-import { currentUser } from "./lib/auth.js";
+import type { ApiRequest, ApiResponse } from "../server/http.js";
+import { readJson, sendJson } from "../server/http.js";
+import { currentUser } from "../server/auth.js";
 import {
   getServiceSettings,
   upsertServiceSettings,
   type ServiceSettings,
-} from "./lib/db.js";
+} from "../server/db.js";
 
 function normalizeServiceSettings(body: Partial<ServiceSettings>): ServiceSettings {
   return {

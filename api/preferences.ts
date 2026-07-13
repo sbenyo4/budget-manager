@@ -1,7 +1,7 @@
-import type { ApiRequest, ApiResponse } from "./lib/http.js";
-import { readJson, sendJson } from "./lib/http.js";
-import { currentUser } from "./lib/auth.js";
-import { getPreferences, upsertPreferences, type BudgetPreferences } from "./lib/db.js";
+import type { ApiRequest, ApiResponse } from "../server/http.js";
+import { readJson, sendJson } from "../server/http.js";
+import { currentUser } from "../server/auth.js";
+import { getPreferences, upsertPreferences, type BudgetPreferences } from "../server/db.js";
 
 function normalizePreferences(body: Partial<BudgetPreferences>): BudgetPreferences {
   const threshold = Number(body.highAmountThreshold);

@@ -1,8 +1,8 @@
-import type { ApiRequest, ApiResponse } from "./lib/http.js";
-import { getQueryParam, sendJson } from "./lib/http.js";
-import { getTransactions, isOpenFinanceConfigured } from "./lib/openFinance.js";
-import { currentUser } from "./lib/auth.js";
-import { getServiceSettings } from "./lib/db.js";
+import type { ApiRequest, ApiResponse } from "../server/http.js";
+import { getQueryParam, sendJson } from "../server/http.js";
+import { getTransactions, isOpenFinanceConfigured } from "../server/openFinance.js";
+import { currentUser } from "../server/auth.js";
+import { getServiceSettings } from "../server/db.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   const from = getQueryParam(req, "from") ?? "";
