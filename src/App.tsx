@@ -4,6 +4,7 @@ import {
   emptyServiceSettings,
   emptyPreferences,
   getAuthConfig,
+  getCurrentUser,
   loadPreferences,
   loadServiceSettings,
   loginWithGoogle,
@@ -25,6 +26,7 @@ import { TrendsView } from "./components/TrendsView";
 
 const YEAR = 2026;
 type ThemeMode = "light" | "dark";
+type PinGateMode = "checking" | "setup" | "locked" | "unlocked" | "unavailable";
 
 function readInitialTheme(): ThemeMode {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -125,7 +127,7 @@ function BudgetApp() {
   const [serviceSettings, setServiceSettings] = useState<ServiceSettings>(emptyServiceSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [dataReloadKey, setDataReloadKey] = useState(0);
-  const [pinGate, setPinGate] = useState<"checking" | "setup" | "locked" | "unlocked">("checking");
+  const [pinGate, setPinGate] = useState<PinGateMode>("checking");
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [bankBalance, setBankBalance] = useState<{ balance: number; date: string } | null>(null);
   const [isDemoMode, setIsDemoMode] = useState(false);
@@ -153,21 +155,41 @@ function BudgetApp() {
       .then(({ hasPin }) => setPinGate(hasPin ? "locked" : "setup"))
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : String(err));
-        setPinGate("setup");
+        setPinGate("unavailable");
       });
   }, [user]);
 
   useEffect(() => {
-    getAuthConfig()
-      .then((config) => {
+    let cancelled = false;
+    Promise.all([getAuthConfig(), getCurrentUser()])
+      .then(([config, current]) => {
+        if (cancelled) return;
         setGoogleClientId(config.googleClientId);
-        setUser(null);
+        if (!current.user) {
+          setUser(null);
+          setPreferencesLoading(false);
+          return;
+        }
+        setUser(current.user);
+        return loadPreferences().then((loaded) => {
+          if (cancelled) return;
+          setPreferences(loaded);
+          setTheme(loaded.theme);
+          setPreferencesLoading(false);
+        });
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => {
-        setAuthLoading(false);
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
         setPreferencesLoading(false);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setAuthLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -607,7 +629,7 @@ function PinGate({
   onLogout,
 }: {
   user: AuthUser;
-  mode: "checking" | "setup" | "locked" | "unlocked";
+  mode: PinGateMode;
   onUnlock: () => void;
   onLogout: () => void;
 }) {
@@ -659,6 +681,26 @@ function PinGate({
 
   if (mode === "checking") {
     return <div className="app"><div className="loading">בודק PIN…</div></div>;
+  }
+
+  if (mode === "unavailable") {
+    return (
+      <div className="app">
+        <section className="login-panel pin-panel">
+          <h1>לא ניתן לבדוק PIN</h1>
+          <p className="subtitle">לא ניצור PIN חדש כל עוד אי אפשר לוודא אם כבר קיים PIN למשתמש הזה.</p>
+          <p className="pin-user">{user.email}</p>
+          <div className="pin-form">
+            <button className="primary-button" type="button" onClick={() => window.location.reload()}>
+              רענון
+            </button>
+            <button className="table-toggle pin-switch-user" onClick={onLogout}>
+              החלפת משתמש
+            </button>
+          </div>
+        </section>
+      </div>
+    );
   }
 
   return (

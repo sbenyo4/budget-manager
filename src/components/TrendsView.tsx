@@ -58,6 +58,12 @@ type ExpenseScope = "all" | "fixed" | "variable";
 
 /** Money movements that are neither earnings nor consumption. */
 const NON_FLOW_MAINS = new Set(["TRADING", "TRANSFER", "ASSETS", "DEPOSIT"]);
+const AUTO_FIXED_CATEGORIES = new Set([
+  "HOUSEHOLD_&_SERVICES",
+  "HEALTH_&_BEAUTY",
+  "LOAN_TRANSACTION",
+  "CUSTOM:מינויים",
+]);
 
 function fixedExpenseKey(tx: Transaction): string {
   return `${tx.categoryMain}::${merchantKey(tx)}`;
@@ -73,6 +79,29 @@ function expenseScopeLabel(expenseScope: ExpenseScope): string {
   if (expenseScope === "fixed") return "קבועות בלבד";
   if (expenseScope === "variable") return "לא קבועות בלבד";
   return "כולל קבועות וחד פעמיות";
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
+}
+
+function hasStableAmount(transactions: Transaction[]): boolean {
+  if (transactions.length < 3) return false;
+  const amounts = transactions.map((tx) => tx.amount);
+  const med = median(amounts);
+  if (med <= 0) return false;
+  return amounts.every((amount) => Math.abs(amount - med) <= Math.max(10, med * 0.15));
+}
+
+function isAutoFixedGroup(category: string, group: { periodKeys: Set<string>; recurring: boolean; transactions: Transaction[] }): boolean {
+  if (group.recurring) return true;
+  if (!AUTO_FIXED_CATEGORIES.has(category)) return false;
+  return group.periodKeys.size >= 3 && hasStableAmount(group.transactions);
+}
+
+function isRepeatVariableGroup(group: { count: number; periodKeys: Set<string> }): boolean {
+  return group.periodKeys.size >= 2 || group.count >= 2;
 }
 
 function metricsFor(
@@ -174,20 +203,18 @@ function fixedBreakdownFor(
   const periodCount = Math.max(1, periods.length);
   const total = [...groups.values()].reduce((sum, group) => sum + group.total, 0);
   const fixed: FixedBreakdownRow[] = [];
-  let otherTotal = 0;
-  let otherCount = 0;
-  const otherChildren: FixedBreakdownRow[] = [];
+  let oneTimeTotal = 0;
+  let oneTimeCount = 0;
+  const oneTimeChildren: FixedBreakdownRow[] = [];
 
   for (const [key, group] of groups) {
     const detailKey = overrideKey(category, key);
     const isForcedFixed = fixedKeys.has(detailKey);
     const isOneTime = oneTimeKeys.has(detailKey) && !isForcedFixed;
-    const isFixed = isForcedFixed || (!isOneTime && (group.recurring || group.periodKeys.size >= 2));
+    const isFixed = isForcedFixed || (!isOneTime && isAutoFixedGroup(category, group));
     if (!isFixed) {
-      const isAutoOneTime = !isOneTime;
-      otherTotal += group.total;
-      otherCount += group.count;
-      otherChildren.push({
+      const isRepeatVariable = !isOneTime && isRepeatVariableGroup(group);
+      const child: FixedBreakdownRow = {
         key: detailKey,
         label: group.label,
         total: group.total,
@@ -196,10 +223,17 @@ function fixedBreakdownFor(
         average: group.total / periodCount,
         share: total > 0 ? group.total / total : 0,
         transactions: group.transactions,
-        oneTime: true,
-        oneTimeAuto: isAutoOneTime,
+        oneTime: !isRepeatVariable,
+        oneTimeAuto: !isRepeatVariable && !isOneTime,
         fixedOverride: false,
-      });
+      };
+      if (isRepeatVariable) {
+        fixed.push(child);
+      } else {
+        oneTimeTotal += group.total;
+        oneTimeCount += group.count;
+        oneTimeChildren.push(child);
+      }
       continue;
     }
     fixed.push({
@@ -217,20 +251,20 @@ function fixedBreakdownFor(
     });
   }
 
-  if (otherTotal > 0) {
+  if (oneTimeTotal > 0) {
     fixed.push({
       key: "__other",
-      label: "רכישות חד פעמיות / לא קבועות",
-      total: otherTotal,
-      count: otherCount,
+      label: "רכישות חד פעמיות",
+      total: oneTimeTotal,
+      count: oneTimeCount,
       periodCount: 0,
-      average: otherTotal / periodCount,
-      share: total > 0 ? otherTotal / total : 0,
-      transactions: otherChildren.flatMap((child) => child.transactions),
+      average: oneTimeTotal / periodCount,
+      share: total > 0 ? oneTimeTotal / total : 0,
+      transactions: oneTimeChildren.flatMap((child) => child.transactions),
       isOther: true,
       oneTime: true,
       oneTimeAuto: true,
-      children: otherChildren.sort((a, b) => b.total - a.total),
+      children: oneTimeChildren.sort((a, b) => b.total - a.total),
     });
   }
 
@@ -248,15 +282,16 @@ function fixedExpenseKeysFor(
   oneTimeKeys: Set<string>,
   forcedFixedKeys: Set<string>
 ): Set<string> {
-  const groups = new Map<string, { tx: Transaction; periodKeys: Set<string>; recurring: boolean }>();
+  const groups = new Map<string, { tx: Transaction; periodKeys: Set<string>; recurring: boolean; transactions: Transaction[] }>();
 
   for (const tx of transactions) {
     if (tx.type === "income" || !isConsumption(tx)) continue;
     if (tx.date < from || tx.date > to) continue;
     const key = fixedExpenseKey(tx);
     const periodKey = periodKeyFor(tx.date, periods);
-    const group = groups.get(key) ?? { tx, periodKeys: new Set<string>(), recurring: false };
+    const group = groups.get(key) ?? { tx, periodKeys: new Set<string>(), recurring: false, transactions: [] };
     group.recurring = group.recurring || Boolean(tx.recurring);
+    group.transactions.push(tx);
     if (periodKey) group.periodKeys.add(periodKey);
     groups.set(key, group);
   }
@@ -269,7 +304,7 @@ function fixedExpenseKeysFor(
       continue;
     }
     if (oneTimeKeys.has(oneTimeKey)) continue;
-    if (group.recurring || group.periodKeys.size >= 2) fixedKeys.add(key);
+    if (isAutoFixedGroup(group.tx.categoryMain, group)) fixedKeys.add(key);
   }
   return fixedKeys;
 }

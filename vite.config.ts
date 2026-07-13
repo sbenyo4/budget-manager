@@ -551,14 +551,14 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
   function normalize(raw: RawTransaction, index: number, source: "bank" | "card") {
     const date =
       source === "card"
-        ? raw.date?.valueDate ?? raw.date?.transactionDate ?? raw.date?.bookingDate ?? ""
+        ? raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? ""
         : raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? "";
 
     return {
-      id: raw.id ?? `${source}-tx-${index}`,
+      id: raw.id ? `${source}:${raw.id}` : `${source}-tx-${index}`,
       source,
-      // Card installment rows are separate monthly charges, so use the actual
-      // charge date. Bank rows keep the transaction date when available.
+      // Use the purchase/transaction date for cards. valueDate is the billing
+      // date and can make unrelated card purchases look like duplicates.
       date,
       merchant: raw.merchantName || raw.description?.description || "לא ידוע",
       amount: Math.abs(rawAmount(raw)),
