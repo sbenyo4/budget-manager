@@ -1,11 +1,10 @@
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { isConsumption, isSavings } from "../logic/flows";
 import type { BudgetPreferences } from "../api/preferences";
 import { mainColor, subLabel } from "../logic/categoryNames";
 import {
-  applyCategoryOverrides,
   categoryChoices,
   categoryLabel,
   customCategoryKey,
@@ -288,6 +287,9 @@ function detailTransactions(txs: Transaction[]) {
       merchant: tx.merchant,
       amount: tx.amount,
       source: tx.source,
+      type: tx.type,
+      categoryMain: tx.categoryMain,
+      categorySub: tx.categorySub,
     }));
 }
 
@@ -332,138 +334,169 @@ export function detailForBreakdownItem(
   };
 }
 
-export function TrendsView({ transactions, periods, bankBalance, preferences, onPreferencesChange }: Props) {
+export function TrendsView({
+  transactions,
+  periods,
+  bankBalance,
+  preferences,
+  onPreferencesChange,
+}: Props) {
   const [range, setRange] = useState<number | "all">(6);
   const [category, setCategory] = useState<string | null>(null);
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const [excludedCategories, setExcludedCategories] = useState<Set<string>>(() => new Set());
   const sectionOverrides = preferences.sectionOverrides;
-  const oneTimeExpenses = new Set(preferences.oneTimeExpenses);
-  const fixedExpenses = new Set(preferences.fixedExpenses);
+  const oneTimeExpenses = useMemo(() => new Set(preferences.oneTimeExpenses), [preferences.oneTimeExpenses]);
+  const fixedExpenses = useMemo(() => new Set(preferences.fixedExpenses), [preferences.fixedExpenses]);
+  const highAmountThreshold = preferences.highAmountThreshold;
   const [expenseScope, setExpenseScope] = useState<ExpenseScope>("all");
 
   // periods[0] is the running (partial) one — averages use complete periods only
-  const completePeriods = periods.slice(1);
-  const rangeOptions = Array.from({ length: completePeriods.length }, (_, index) => index + 1);
+  const completePeriods = useMemo(() => periods.slice(1), [periods]);
+  const rangeOptions = useMemo(
+    () => Array.from({ length: completePeriods.length }, (_, index) => index + 1),
+    [completePeriods.length]
+  );
   const effectiveRange = range === "all" ? "all" : Math.min(range, completePeriods.length);
-  const chosen = effectiveRange === "all" ? completePeriods : completePeriods.slice(0, effectiveRange);
-  const categorizedTransactions = applyCategoryOverrides(transactions, sectionOverrides);
-
-  if (chosen.length === 0) {
-    return <p className="loading">אין תקופות שלמות להצגה עדיין.</p>;
-  }
+  const chosen = useMemo(
+    () => (effectiveRange === "all" ? completePeriods : completePeriods.slice(0, effectiveRange)),
+    [completePeriods, effectiveRange]
+  );
+  const categorizedTransactions = transactions;
 
   // category options: consumption mains seen in the chosen span, largest first
-  const rangeFrom = chosen[chosen.length - 1].from;
-  const rangeTo = chosen[0].to;
-  const fixedExpenseKeys = fixedExpenseKeysFor(
-    categorizedTransactions,
-    chosen,
-    rangeFrom,
-    rangeTo,
-    oneTimeExpenses,
-    fixedExpenses
+  const rangeFrom = chosen[chosen.length - 1]?.from ?? "";
+  const rangeTo = chosen[0]?.to ?? "";
+  const fixedExpenseKeys = useMemo(
+    () => fixedExpenseKeysFor(categorizedTransactions, chosen, rangeFrom, rangeTo, oneTimeExpenses, fixedExpenses),
+    [categorizedTransactions, chosen, fixedExpenses, oneTimeExpenses, rangeFrom, rangeTo]
   );
-  const rows = chosen
-    .map((p) => metricsFor(categorizedTransactions, p, category, excludedCategories, expenseScope, fixedExpenseKeys))
-    .reverse(); // oldest → newest
-  const allCatTotals = new Map<string, number>();
-  for (const t of categorizedTransactions) {
-    if (t.type === "income" || !isConsumption(t)) continue;
-    if (t.date < rangeFrom || t.date > rangeTo) continue;
-    if (!isInExpenseScope(t, expenseScope, fixedExpenseKeys)) continue;
-    allCatTotals.set(t.categoryMain, (allCatTotals.get(t.categoryMain) ?? 0) + t.amount);
-  }
-  const categoryOptions = [...allCatTotals.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m);
-  const categoryEditorOptions: CategoryChoice[] = categoryChoices(categoryOptions, sectionOverrides);
+  const rows = useMemo(
+    () =>
+      chosen
+        .map((p) => metricsFor(categorizedTransactions, p, category, excludedCategories, expenseScope, fixedExpenseKeys))
+        .reverse(),
+    [categorizedTransactions, category, chosen, excludedCategories, expenseScope, fixedExpenseKeys]
+  ); // oldest → newest
+  const allCatTotals = useMemo(() => {
+    const totalsByCategory = new Map<string, number>();
+    for (const t of categorizedTransactions) {
+      if (t.type === "income" || !isConsumption(t)) continue;
+      if (t.date < rangeFrom || t.date > rangeTo) continue;
+      if (!isInExpenseScope(t, expenseScope, fixedExpenseKeys)) continue;
+      totalsByCategory.set(t.categoryMain, (totalsByCategory.get(t.categoryMain) ?? 0) + t.amount);
+    }
+    return totalsByCategory;
+  }, [categorizedTransactions, expenseScope, fixedExpenseKeys, rangeFrom, rangeTo]);
+  const sortedCategoryTotals = useMemo(
+    () => [...allCatTotals.entries()].sort((a, b) => b[1] - a[1]),
+    [allCatTotals]
+  );
+  const categoryOptions = useMemo(() => sortedCategoryTotals.map(([m]) => m), [sortedCategoryTotals]);
+  const categoryEditorOptions: CategoryChoice[] = useMemo(
+    () => categoryChoices(categoryOptions, sectionOverrides),
+    [categoryOptions, sectionOverrides]
+  );
   const n = rows.length;
-  const categoryAverageSlices: DonutSlice[] = [...allCatTotals.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([key, total]) => {
-      const breakdown = fixedBreakdownFor(
-        categorizedTransactions,
-        chosen,
-        key,
-        rangeFrom,
-        rangeTo,
-        {},
-        oneTimeExpenses,
-        fixedExpenses
-      );
-      const visibleBreakdown =
-        expenseScope === "fixed"
-          ? breakdown.filter((item) => !item.isOther)
-          : expenseScope === "variable"
-            ? breakdown.filter((item) => item.isOther)
-            : breakdown;
-      return {
+  const expandedBreakdown = useMemo(() => {
+    if (!expandedCategory) return null;
+    const breakdown = fixedBreakdownFor(
+      categorizedTransactions,
+      chosen,
+      expandedCategory,
+      rangeFrom,
+      rangeTo,
+      {},
+      oneTimeExpenses,
+      fixedExpenses
+    );
+    return expenseScope === "fixed"
+      ? breakdown.filter((item) => !item.isOther)
+      : expenseScope === "variable"
+        ? breakdown.filter((item) => item.isOther)
+        : breakdown;
+  }, [categorizedTransactions, chosen, expandedCategory, expenseScope, fixedExpenses, oneTimeExpenses, rangeFrom, rangeTo]);
+  const categoryAverageSlices: DonutSlice[] = useMemo(
+    () =>
+      sortedCategoryTotals.map(([key, total]) => ({
         key,
         label: categoryLabel(key),
         value: total / n,
         color: mainColor(key),
-        details: visibleBreakdown.map((item) => ({
-          key: item.key,
-          label: item.label,
-          value: item.average,
-          transactions: detailTransactions(item.transactions),
-          meta: `${Math.round(item.share * 100)}% · ${item.count} עסקאות${
-            item.isOther ? " · לא קבוע" : ` · ${item.periodCount} תקופות`
-          }`,
-          oneTime: item.oneTime,
-          oneTimeAuto: item.oneTimeAuto,
-          fixedOverride: item.fixedOverride,
-          categoryValue: sectionOverrides[item.key] ?? defaultCategoryForMerchant(item.label) ?? key,
-          children: item.children?.map((child) => ({
-            key: child.key,
-            label: child.label,
-            value: child.average,
-            transactions: detailTransactions(child.transactions),
-            meta: `${Math.round(child.share * 100)}% · ${child.count} עסקאות${
-              child.periodCount > 0 ? ` · ${child.periodCount} תקופות` : ""
-            }`,
-            oneTime: child.oneTime,
-            oneTimeAuto: child.oneTimeAuto,
-            fixedOverride: child.fixedOverride,
-            categoryValue: sectionOverrides[child.key] ?? defaultCategoryForMerchant(child.label) ?? key,
-          })),
-        })),
-      };
-    });
-  const excludedTotal = [...allCatTotals.entries()]
-    .filter(([key]) => excludedCategories.has(key))
-    .reduce((sum, [, total]) => sum + total, 0);
-  const totals = {
-    income: rows.reduce((s, r) => s + r.income, 0),
-    expense: rows.reduce((s, r) => s + r.expense, 0),
-    securities: rows.reduce((s, r) => s + r.securities, 0),
-    catExpense: rows.reduce((s, r) => s + r.catExpense, 0),
-    catCount: rows.reduce((s, r) => s + r.catCount, 0),
-  };
+        details:
+          key === expandedCategory
+            ? expandedBreakdown?.map((item) => ({
+                key: item.key,
+                label: item.label,
+                value: item.average,
+                transactions: detailTransactions(item.transactions),
+                meta: `${Math.round(item.share * 100)}% · ${item.count} עסקאות${
+                  item.isOther ? " · לא קבוע" : ` · ${item.periodCount} תקופות`
+                }`,
+                oneTime: item.oneTime,
+                oneTimeAuto: item.oneTimeAuto,
+                fixedOverride: item.fixedOverride,
+                categoryValue: sectionOverrides[item.key] ?? defaultCategoryForMerchant(item.label) ?? key,
+                children: item.children?.map((child) => ({
+                  key: child.key,
+                  label: child.label,
+                  value: child.average,
+                  transactions: detailTransactions(child.transactions),
+                  meta: `${Math.round(child.share * 100)}% · ${child.count} עסקאות${
+                    child.periodCount > 0 ? ` · ${child.periodCount} תקופות` : ""
+                  }`,
+                  oneTime: child.oneTime,
+                  oneTimeAuto: child.oneTimeAuto,
+                  fixedOverride: child.fixedOverride,
+                  categoryValue: sectionOverrides[child.key] ?? defaultCategoryForMerchant(child.label) ?? key,
+                })),
+              }))
+            : undefined,
+      })),
+    [expandedBreakdown, expandedCategory, n, sectionOverrides, sortedCategoryTotals]
+  );
+  const excludedTotal = useMemo(
+    () =>
+      sortedCategoryTotals
+        .filter(([key]) => excludedCategories.has(key))
+        .reduce((sum, [, total]) => sum + total, 0),
+    [excludedCategories, sortedCategoryTotals]
+  );
+  const totals = useMemo(
+    () => ({
+      income: rows.reduce((s, r) => s + r.income, 0),
+      expense: rows.reduce((s, r) => s + r.expense, 0),
+      securities: rows.reduce((s, r) => s + r.securities, 0),
+      catExpense: rows.reduce((s, r) => s + r.catExpense, 0),
+      catCount: rows.reduce((s, r) => s + r.catCount, 0),
+    }),
+    [rows]
+  );
   const leftoverTotal = totals.income - totals.expense - totals.securities;
   const grossExpenseTotal = totals.expense + excludedTotal;
   const selectedCategoryExcluded = category ? excludedCategories.has(category) : false;
 
-  function toggleCategoryInCalculation(key: string) {
+  const toggleCategoryInCalculation = useCallback((key: string) => {
     setExcludedCategories((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
-  }
+  }, []);
 
   // running total of the leftovers — a negative single-period flow just means
   // money saved up earlier was used (e.g. a bonus funding a big investment)
-  function categorizeDetail(detailKey: string, section: string) {
+  const categorizeDetail = useCallback((detailKey: string, section: string) => {
     const raw = section.trim();
     const value = raw && categoryOptions.includes(raw) ? raw : raw ? customCategoryKey(raw) : "";
     const next = { ...sectionOverrides };
     if (value) next[detailKey] = value;
     else delete next[detailKey];
     onPreferencesChange({ ...preferences, sectionOverrides: next });
-  }
+  }, [categoryOptions, onPreferencesChange, preferences, sectionOverrides]);
 
-  function toggleOneTimeDetail(detailKey: string) {
+  const toggleOneTimeDetail = useCallback((detailKey: string) => {
     const nextFixed = new Set(fixedExpenses);
     nextFixed.delete(detailKey);
     const nextOneTime = new Set(oneTimeExpenses);
@@ -474,9 +507,9 @@ export function TrendsView({ transactions, periods, bankBalance, preferences, on
       fixedExpenses: [...nextFixed],
       oneTimeExpenses: [...nextOneTime],
     });
-  }
+  }, [fixedExpenses, oneTimeExpenses, onPreferencesChange, preferences]);
 
-  function toggleFixedDetail(detailKey: string) {
+  const toggleFixedDetail = useCallback((detailKey: string) => {
     const nextOneTime = new Set(oneTimeExpenses);
     nextOneTime.delete(detailKey);
     const nextFixed = new Set(fixedExpenses);
@@ -487,23 +520,40 @@ export function TrendsView({ transactions, periods, bankBalance, preferences, on
       fixedExpenses: [...nextFixed],
       oneTimeExpenses: [...nextOneTime],
     });
-  }
+  }, [fixedExpenses, oneTimeExpenses, onPreferencesChange, preferences]);
 
-  let running = 0;
-  const cumulative = rows.map((r) => (running += r.leftover));
+  const cumulative = useMemo(() => {
+    let total = 0;
+    return rows.map((r) => (total += r.leftover));
+  }, [rows]);
 
   // With the real balance known, reconstruct the actual checking balance at
   // each period's end: today's balance minus every raw bank movement (all
   // categories, signed — no analytics filtering) that happened after it.
   // This is exact regardless of card-billing timing.
-  const bankTxs = categorizedTransactions.filter((t) => t.source !== "card");
-  const balanceAt = (endDate: string): number => {
-    if (!bankBalance) return 0;
-    const netAfter = bankTxs
-      .filter((t) => t.date > endDate)
-      .reduce((s, t) => s + (t.type === "income" ? t.amount : -t.amount), 0);
-    return bankBalance.balance - netAfter;
-  };
+  const balanceByPeriodEnd = useMemo(() => {
+    if (!bankBalance) return new Map<string, number>();
+    const bankTxs = categorizedTransactions
+      .filter((t) => t.source !== "card")
+      .sort((a, b) => b.date.localeCompare(a.date));
+    const balances = new Map<string, number>();
+    const ends = [...chosen].sort((a, b) => b.to.localeCompare(a.to));
+    let txIndex = 0;
+    let netAfter = 0;
+    for (const period of ends) {
+      while (txIndex < bankTxs.length && bankTxs[txIndex].date > period.to) {
+        const tx = bankTxs[txIndex];
+        netAfter += tx.type === "income" ? tx.amount : -tx.amount;
+        txIndex += 1;
+      }
+      balances.set(period.to, bankBalance.balance - netAfter);
+    }
+    return balances;
+  }, [bankBalance, categorizedTransactions, chosen]);
+
+  if (chosen.length === 0) {
+    return <p className="loading">אין תקופות שלמות להצגה עדיין.</p>;
+  }
 
   const series: Array<{ key: SeriesKey; label: string; color: string }> = category
     ? [{ key: "catExpense", label: categoryLabel(category), color: mainColor(category) }]
@@ -685,6 +735,7 @@ export function TrendsView({ transactions, periods, bankBalance, preferences, on
           onCategorizeDetail={categorizeDetail}
           onToggleOneTimeDetail={toggleOneTimeDetail}
           onToggleFixedDetail={toggleFixedDetail}
+          highAmountThreshold={highAmountThreshold}
         />
       </div>
 
@@ -806,7 +857,7 @@ export function TrendsView({ transactions, periods, bankBalance, preferences, on
               <tbody>
                 {[...rows].reverse().map((r, ri) => {
                   const anchor = bankBalance
-                    ? balanceAt(r.period.to)
+                    ? balanceByPeriodEnd.get(r.period.to) ?? 0
                     : cumulative[rows.length - 1 - ri];
                   return (
                     <tr key={r.period.key}>

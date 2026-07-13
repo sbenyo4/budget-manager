@@ -9,12 +9,28 @@ export interface BudgetPreferences {
   sectionOverrides: Record<string, string>;
   oneTimeExpenses: string[];
   fixedExpenses: string[];
+  highAmountThreshold: number;
+}
+
+export interface ServiceSettings {
+  openFinanceClientId: string;
+  openFinanceClientSecret: string;
+  openFinanceUserId: string;
+  openFinanceApiPrefix: string;
 }
 
 export const emptyPreferences: BudgetPreferences = {
   sectionOverrides: {},
   oneTimeExpenses: [],
   fixedExpenses: [],
+  highAmountThreshold: 5000,
+};
+
+export const emptyServiceSettings: ServiceSettings = {
+  openFinanceClientId: "",
+  openFinanceClientSecret: "",
+  openFinanceUserId: "",
+  openFinanceApiPrefix: "api",
 };
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -67,5 +83,16 @@ export function savePreferences(preferences: BudgetPreferences): Promise<BudgetP
   return apiJson("/api/preferences", {
     method: "PUT",
     body: JSON.stringify(preferences),
+  });
+}
+
+export function loadServiceSettings(): Promise<ServiceSettings> {
+  return apiJson("/api/service-settings");
+}
+
+export function saveServiceSettings(settings: ServiceSettings): Promise<ServiceSettings> {
+  return apiJson("/api/service-settings", {
+    method: "PUT",
+    body: JSON.stringify(settings),
   });
 }

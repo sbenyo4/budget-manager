@@ -1,11 +1,10 @@
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { isCardDebit, isConsumption } from "../logic/flows";
 import type { BudgetPreferences } from "../api/preferences";
 import { displaySubLabel, mainColor } from "../logic/categoryNames";
 import {
-  applyCategoryOverrides,
   categoryChoices,
   categoryLabel,
   customCategoryKey,
@@ -13,7 +12,8 @@ import {
   overrideKey,
 } from "../logic/categoryOverrides";
 import { Donut, type DonutSlice } from "./Donut";
-import { formatILS } from "./format";
+import { formatILS, todayIso } from "./format";
+import { transactionHighlightClass } from "./transactionHighlight";
 
 interface Props {
   /** Full (multi-month) transaction list — needed to find the last card debit */
@@ -37,63 +37,140 @@ function sliceByMain(txs: Transaction[]): DonutSlice[] {
 
 const sum = (txs: Transaction[]) => txs.reduce((s, t) => s + t.amount, 0);
 
-export function MonthlyView({ transactions, periods, bankBalance, preferences, onPreferencesChange }: Props) {
+export function MonthlyView({
+  transactions,
+  periods,
+  bankBalance,
+  preferences,
+  onPreferencesChange,
+}: Props) {
   const [periodKey, setPeriodKey] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const sectionOverrides = preferences.sectionOverrides;
-  const oneTimeExpenses = new Set(preferences.oneTimeExpenses);
-  const categorizedTransactions = applyCategoryOverrides(transactions, sectionOverrides);
+  const oneTimeExpenses = useMemo(() => new Set(preferences.oneTimeExpenses), [preferences.oneTimeExpenses]);
+  const highAmountThreshold = preferences.highAmountThreshold;
+  const categorizedTransactions = transactions;
 
-  const period = periods.find((p) => p.key === periodKey) ?? periods[0];
-
-  if (!period) {
-    return <p className="loading">אין נתונים להצגה.</p>;
-  }
+  const period = useMemo(() => {
+    if (periodKey) return periods.find((p) => p.key === periodKey) ?? periods[0];
+    const today = todayIso();
+    return periods.find((p) => today >= p.from && today <= p.to) ?? periods[0] ?? null;
+  }, [periodKey, periods]);
+  const periodFrom = period?.from ?? "";
+  const periodTo = period?.to ?? "";
 
   // Card purchases after the last aggregate card debit haven't been charged
   // to the account yet — they're the upcoming bill
-  const lastDebitDate = categorizedTransactions
-    .filter((t) => isCardDebit(t) && t.type !== "income")
-    .reduce((max, t) => (t.date > max ? t.date : max), "");
+  const lastDebitDate = useMemo(
+    () =>
+      categorizedTransactions
+        .filter((t) => isCardDebit(t) && t.type !== "income")
+        .reduce((max, t) => (t.date > max ? t.date : max), ""),
+    [categorizedTransactions]
+  );
 
-  const inPeriod = categorizedTransactions.filter((tx) => tx.date >= period.from && tx.date <= period.to);
-  const bankTxs = inPeriod.filter((tx) => tx.source !== "card");
-  const cardTxs = inPeriod.filter((tx) => tx.source === "card");
+  const inPeriod = useMemo(
+    () => categorizedTransactions.filter((tx) => tx.date >= periodFrom && tx.date <= periodTo),
+    [categorizedTransactions, periodFrom, periodTo]
+  );
+  const bankTxs = useMemo(() => inPeriod.filter((tx) => tx.source !== "card"), [inPeriod]);
+  const cardTxs = useMemo(() => inPeriod.filter((tx) => tx.source === "card"), [inPeriod]);
 
   const isPending = (tx: Transaction) => tx.source === "card" && tx.date > lastDebitDate;
 
   // Account state: what actually moved through the bank account
-  const bankIncome = sum(bankTxs.filter((t) => t.type === "income"));
-  const bankExpense = sum(bankTxs.filter((t) => t.type !== "income"));
+  const bankIncome = useMemo(() => sum(bankTxs.filter((t) => t.type === "income")), [bankTxs]);
+  const bankExpense = useMemo(() => sum(bankTxs.filter((t) => t.type !== "income")), [bankTxs]);
   const net = bankIncome - bankExpense;
   const signedBankMovement = (tx: Transaction) => (tx.type === "income" ? tx.amount : -tx.amount);
-  const bankNetAfterPeriod = categorizedTransactions
-    .filter((tx) => tx.source !== "card" && tx.date > period.to)
-    .reduce((total, tx) => total + signedBankMovement(tx), 0);
+  const bankNetAfterPeriod = useMemo(
+    () =>
+      categorizedTransactions
+        .filter((tx) => tx.source !== "card" && tx.date > periodTo)
+        .reduce((total, tx) => total + signedBankMovement(tx), 0),
+    [categorizedTransactions, periodTo]
+  );
   const balanceAtPeriodEnd = bankBalance ? bankBalance.balance - bankNetAfterPeriod : null;
   const balanceAtPeriodStart = balanceAtPeriodEnd === null ? null : balanceAtPeriodEnd - net;
 
   // Upcoming bill: card activity not yet debited
-  const pendingCard = cardTxs.filter(isPending);
-  const pendingTotal =
-    sum(pendingCard.filter((t) => t.type !== "income")) -
-    sum(pendingCard.filter((t) => t.type === "income"));
+  const pendingCard = useMemo(() => cardTxs.filter(isPending), [cardTxs, lastDebitDate]);
+  const pendingTotal = useMemo(
+    () => sum(pendingCard.filter((t) => t.type !== "income")) - sum(pendingCard.filter((t) => t.type === "income")),
+    [pendingCard]
+  );
 
   // Category breakdown: replace the aggregate card debits with the card's
   // own transactions (incl. pending ones — they're real consumption)
-  const breakdownExpenses = [
-    ...bankTxs.filter((t) => t.type !== "income" && !isCardDebit(t)),
-    ...cardTxs.filter((t) => t.type !== "income"),
-  ];
-  const breakdownIncomes = inPeriod.filter((t) => t.type === "income");
-  const categoryOptions = [...new Set([...breakdownExpenses, ...breakdownIncomes].map((t) => t.categoryMain))];
-  const categoryEditorOptions = categoryChoices(categoryOptions, sectionOverrides);
+  const breakdownExpenses = useMemo(
+    () => [
+      ...bankTxs.filter((t) => t.type !== "income" && !isCardDebit(t)),
+      ...cardTxs.filter((t) => t.type !== "income"),
+    ],
+    [bankTxs, cardTxs]
+  );
+  const breakdownIncomes = useMemo(() => inPeriod.filter((t) => t.type === "income"), [inPeriod]);
+  const categoryOptions = useMemo(
+    () => [...new Set([...breakdownExpenses, ...breakdownIncomes].map((t) => t.categoryMain))],
+    [breakdownExpenses, breakdownIncomes]
+  );
+  const categoryEditorOptions = useMemo(
+    () => categoryChoices(categoryOptions, sectionOverrides),
+    [categoryOptions, sectionOverrides]
+  );
+  const expenseSlices = useMemo(() => sliceByMain(breakdownExpenses), [breakdownExpenses]);
+  const incomeSlices = useMemo(() => sliceByMain(breakdownIncomes), [breakdownIncomes]);
+  const expenseSummaryByCategory = useMemo(() => {
+    const summary = new Map<string, { count: number; total: number }>();
+    for (const tx of breakdownExpenses) {
+      const current = summary.get(tx.categoryMain) ?? { count: 0, total: 0 };
+      current.count += 1;
+      current.total += tx.amount;
+      summary.set(tx.categoryMain, current);
+    }
+    return summary;
+  }, [breakdownExpenses]);
+  const incomeSummaryByCategory = useMemo(() => {
+    const summary = new Map<string, { count: number; total: number }>();
+    for (const tx of breakdownIncomes) {
+      const current = summary.get(tx.categoryMain) ?? { count: 0, total: 0 };
+      current.count += 1;
+      current.total += tx.amount;
+      summary.set(tx.categoryMain, current);
+    }
+    return summary;
+  }, [breakdownIncomes]);
+  const allExpenseTotal = useMemo(() => sum(breakdownExpenses), [breakdownExpenses]);
+  const categorySummary = useMemo(() => {
+    if (!categoryFilter) return null;
+    const categoryExpenses = expenseSummaryByCategory.get(categoryFilter) ?? { count: 0, total: 0 };
+    const categoryIncomes = incomeSummaryByCategory.get(categoryFilter) ?? { count: 0, total: 0 };
+    return {
+      expenseCount: categoryExpenses.count,
+      expenseTotal: categoryExpenses.total,
+      incomeTotal: categoryIncomes.total,
+      hasIncome: categoryIncomes.count > 0,
+      share: allExpenseTotal > 0 ? Math.round((categoryExpenses.total / allExpenseTotal) * 100) : null,
+      average: categoryExpenses.count > 0 ? categoryExpenses.total / categoryExpenses.count : null,
+    };
+  }, [allExpenseTotal, categoryFilter, expenseSummaryByCategory, incomeSummaryByCategory]);
 
-  const listed = [...inPeriod]
-    .filter((tx) => !categoryFilter || tx.categoryMain === categoryFilter)
-    .sort((a, b) => b.date.localeCompare(a.date));
+  const sortedInPeriod = useMemo(() => [...inPeriod].sort((a, b) => b.date.localeCompare(a.date)), [inPeriod]);
+  const listedByCategory = useMemo(() => {
+    const byCategory = new Map<string, Transaction[]>();
+    for (const tx of sortedInPeriod) {
+      const group = byCategory.get(tx.categoryMain);
+      if (group) group.push(tx);
+      else byCategory.set(tx.categoryMain, [tx]);
+    }
+    return byCategory;
+  }, [sortedInPeriod]);
+  const listed = useMemo(
+    () => (categoryFilter ? listedByCategory.get(categoryFilter) ?? [] : sortedInPeriod),
+    [categoryFilter, listedByCategory, sortedInPeriod]
+  );
 
-  function categorizeMerchant(tx: Transaction, category: string) {
+  const categorizeMerchant = useCallback((tx: Transaction, category: string) => {
     const merchant = merchantKey(tx);
     const raw = category.trim();
     const isKnownCategory = categoryEditorOptions.some((option) => option.value === raw);
@@ -103,13 +180,13 @@ export function MonthlyView({ transactions, periods, bankBalance, preferences, o
     if (value) next[key] = value;
     else delete next[key];
     onPreferencesChange({ ...preferences, sectionOverrides: next });
-  }
+  }, [categoryEditorOptions, onPreferencesChange, preferences, sectionOverrides]);
 
   function oneTimeKey(tx: Transaction): string {
     return overrideKey(tx.categoryMain, merchantKey(tx));
   }
 
-  function toggleOneTime(tx: Transaction) {
+  const toggleOneTime = useCallback((tx: Transaction) => {
     const key = oneTimeKey(tx);
     const nextFixed = new Set(preferences.fixedExpenses);
     nextFixed.delete(key);
@@ -121,6 +198,10 @@ export function MonthlyView({ transactions, periods, bankBalance, preferences, o
       fixedExpenses: [...nextFixed],
       oneTimeExpenses: [...nextOneTime],
     });
+  }, [oneTimeExpenses, onPreferencesChange, preferences]);
+
+  if (!period) {
+    return <p className="loading">אין נתונים להצגה.</p>;
   }
 
   return (
@@ -167,45 +248,21 @@ export function MonthlyView({ transactions, periods, bankBalance, preferences, o
               {categoryLabel(categoryFilter)} בתקופה זו
             </span>
             <span className="stat-value">
-              {formatILS(
-                breakdownExpenses
-                  .filter((t) => t.categoryMain === categoryFilter)
-                  .reduce((s, t) => s + t.amount, 0)
-              )}
+              {formatILS(categorySummary?.expenseTotal ?? 0)}
             </span>
             <span className="stat-hint">
-              {breakdownExpenses.filter((t) => t.categoryMain === categoryFilter).length} עסקאות הוצאה
-              {breakdownIncomes.some((t) => t.categoryMain === categoryFilter) &&
-                ` · הכנסות: ${formatILS(
-                  breakdownIncomes
-                    .filter((t) => t.categoryMain === categoryFilter)
-                    .reduce((s, t) => s + t.amount, 0)
-                )}`}
+              {categorySummary?.expenseCount ?? 0} עסקאות הוצאה
+              {categorySummary?.hasIncome && ` · הכנסות: ${formatILS(categorySummary.incomeTotal)}`}
             </span>
           </div>
           <div className="stat-tile">
             <span className="stat-label">חלק מהוצאות התקופה</span>
-            <span className="stat-value">
-              {(() => {
-                const catTotal = breakdownExpenses
-                  .filter((t) => t.categoryMain === categoryFilter)
-                  .reduce((s, t) => s + t.amount, 0);
-                const all = breakdownExpenses.reduce((s, t) => s + t.amount, 0);
-                return all > 0 ? `${Math.round((catTotal / all) * 100)}%` : "—";
-              })()}
-            </span>
+            <span className="stat-value">{(categorySummary?.share ?? null) !== null ? `${categorySummary?.share}%` : "—"}</span>
             <span className="stat-hint">מסך ההוצאות כולל פירוט אשראי</span>
           </div>
           <div className="stat-tile">
             <span className="stat-label">ממוצע לעסקה</span>
-            <span className="stat-value">
-              {(() => {
-                const cat = breakdownExpenses.filter((t) => t.categoryMain === categoryFilter);
-                return cat.length > 0
-                  ? formatILS(cat.reduce((s, t) => s + t.amount, 0) / cat.length)
-                  : "—";
-              })()}
-            </span>
+            <span className="stat-value">{(categorySummary?.average ?? null) !== null ? formatILS(categorySummary?.average ?? 0) : "—"}</span>
             <span className="stat-hint">בקטגוריה זו</span>
           </div>
         </div>
@@ -265,15 +322,17 @@ export function MonthlyView({ transactions, periods, bankBalance, preferences, o
       <div className="donut-grid">
         <Donut
           title="הוצאות לפי קטגוריה — כולל פירוט האשראי"
-          slices={sliceByMain(breakdownExpenses)}
+          slices={expenseSlices}
           selectedKey={categoryFilter}
           onSelect={setCategoryFilter}
+          highAmountThreshold={highAmountThreshold}
         />
         <Donut
           title="הכנסות לפי קטגוריה"
-          slices={sliceByMain(breakdownIncomes)}
+          slices={incomeSlices}
           selectedKey={categoryFilter}
           onSelect={setCategoryFilter}
+          highAmountThreshold={highAmountThreshold}
         />
       </div>
 
@@ -304,7 +363,10 @@ export function MonthlyView({ transactions, periods, bankBalance, preferences, o
               {listed.map((tx) => {
                 const categorySubLabel = displaySubLabel(tx.categorySub);
                 return (
-                <tr key={tx.id} className={isCardDebit(tx) ? "aggregate-row" : ""}>
+                <tr
+                  key={tx.id}
+                  className={`${isCardDebit(tx) ? "aggregate-row" : ""} ${transactionHighlightClass(tx, highAmountThreshold)}`.trim()}
+                >
                   <td>{new Date(`${tx.date}T00:00:00`).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" })}</td>
                   <td>
                     {tx.merchant}

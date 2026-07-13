@@ -1,5 +1,6 @@
 import type { ClassifiedTransaction } from "../types";
 import { formatILS } from "./format";
+import { transactionHighlightClass } from "./transactionHighlight";
 
 interface Props {
   transactions: ClassifiedTransaction[];
@@ -22,7 +23,7 @@ export function TransactionsTable({ transactions }: Props) {
         </thead>
         <tbody>
           {sorted.map((tx) => (
-            <tr key={tx.id}>
+            <tr key={tx.id} className={transactionHighlightClass(tx, 5000)}>
               <td>{tx.date.slice(8, 10)}.07</td>
               <td>{tx.merchant}</td>
               <td>

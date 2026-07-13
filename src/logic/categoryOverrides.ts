@@ -7,6 +7,7 @@ export const SECTION_OVERRIDES_KEY = "budget-manager:merchant-category-overrides
 export const ONE_TIME_EXPENSES_KEY = "budget-manager:one-time-expenses-v1";
 export const FIXED_EXPENSES_KEY = "budget-manager:fixed-expenses-v1";
 export const CUSTOM_CATEGORY_PREFIX = "CUSTOM:";
+const SUBSCRIPTIONS_CATEGORY = `${CUSTOM_CATEGORY_PREFIX}מינויים`;
 
 export interface LegacyPreferences {
   sectionOverrides: SectionOverrides;
@@ -15,6 +16,21 @@ export interface LegacyPreferences {
 }
 
 export const DEFAULT_CATEGORY_RULES: Array<{ category: string; patterns: string[] }> = [
+  {
+    category: SUBSCRIPTIONS_CATEGORY,
+    patterns: [
+      "spotify",
+      "ספוטיפיי",
+      "netflix",
+      "נטפליקס",
+      "youtube premium",
+      "יוטיוב פרימיום",
+      "icloud",
+      "apple.com/bill",
+      "openai",
+      "chatgpt",
+    ],
+  },
   {
     category: "HOUSEHOLD_&_SERVICES",
     patterns: [
@@ -91,7 +107,7 @@ export const DEFAULT_CATEGORY_RULES: Array<{ category: string; patterns: string[
   },
   {
     category: "LEISURE",
-    patterns: ["spotify", "ספוטיפיי", "מפעל הפיס", "סינמה", "מלון", "hotel", "vacation"],
+    patterns: ["מפעל הפיס", "סינמה", "מלון", "hotel", "vacation"],
   },
   {
     category: "SHOPPING",
@@ -119,6 +135,8 @@ const RECURRING_MERCHANT_PATTERNS = [
   "openai",
   "chatgpt",
 ];
+
+const BRAND_MATCH_TOKENS = ["spotify", "ספוטיפיי", "netflix", "נטפליקס", "openai", "chatgpt", "icloud"];
 
 export function loadSectionOverrides(): SectionOverrides {
   try {
@@ -253,6 +271,14 @@ function merchantsLookSimilar(a: string, b: string): boolean {
 
   const compactA = a.replace(/\s+/g, "");
   const compactB = b.replace(/\s+/g, "");
+  if (
+    BRAND_MATCH_TOKENS.some((brand) => {
+      const compactBrand = compactMerchantFingerprint(brand);
+      return compactA.includes(compactBrand) && compactB.includes(compactBrand);
+    })
+  ) {
+    return true;
+  }
   if (compactA.length >= 5 && compactB.length >= 5 && (compactA.includes(compactB) || compactB.includes(compactA))) {
     return true;
   }

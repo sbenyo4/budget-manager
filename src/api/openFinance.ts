@@ -1,5 +1,4 @@
 import type { Transaction } from "../types";
-import { demoTransactions } from "../data/demoTransactions";
 
 export interface Account {
   id: string;
@@ -33,14 +32,15 @@ export async function fetchCheckingBalance(): Promise<{ balance: number; date: s
 
 export interface FetchResult {
   transactions: Transaction[];
-  /** True when the API credentials are missing and demo data was returned */
+  /** True only for explicit demo flows. Missing credentials no longer show sample data. */
   demo: boolean;
 }
 
 /**
  * Fetch expense transactions for a date range (ISO dates, inclusive) via the
  * local /api proxy (see vite.config.ts — the open-finance.ai credentials live
- * server-side only). Falls back to demo data when .env is not configured.
+ * server-side only). Missing per-user credentials are surfaced to the UI so it
+ * can ask the user to fill settings instead of showing unrelated sample data.
  */
 export async function fetchTransactions(from: string, to: string): Promise<FetchResult> {
   const status = await fetch("/api/status")
@@ -48,10 +48,7 @@ export async function fetchTransactions(from: string, to: string): Promise<Fetch
     .catch(() => ({ configured: false }));
 
   if (!status.configured) {
-    return {
-      transactions: demoTransactions.filter((tx) => tx.date >= from && tx.date <= to),
-      demo: true,
-    };
+    throw new Error("SERVICE_SETTINGS_REQUIRED");
   }
 
   const res = await fetch(`/api/transactions?from=${from}&to=${to}`);

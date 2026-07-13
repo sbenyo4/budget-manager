@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 
 const TOKEN_URL = "https://api.open-finance.ai/oauth/token";
 const SESSION_COOKIE = "budget_session";
-const PREFS_DEFAULT = { sectionOverrides: {}, oneTimeExpenses: [], fixedExpenses: [] };
+const PREFS_DEFAULT = { sectionOverrides: {}, oneTimeExpenses: [], fixedExpenses: [], highAmountThreshold: 5000 };
 const require = createRequire(import.meta.url);
 
 /**
@@ -79,6 +79,42 @@ interface GooglePayload {
   aud?: string;
   iss?: string;
   exp?: number;
+}
+
+interface ServiceSettings {
+  openFinanceClientId: string;
+  openFinanceClientSecret: string;
+  openFinanceUserId: string;
+  openFinanceApiPrefix: string;
+}
+
+const EMPTY_SERVICE_SETTINGS: ServiceSettings = {
+  openFinanceClientId: "",
+  openFinanceClientSecret: "",
+  openFinanceUserId: "",
+  openFinanceApiPrefix: "api",
+};
+
+function normalizeServiceSettings(body: Partial<ServiceSettings>): ServiceSettings {
+  return {
+    openFinanceClientId: typeof body.openFinanceClientId === "string" ? body.openFinanceClientId.trim() : "",
+    openFinanceClientSecret:
+      typeof body.openFinanceClientSecret === "string" ? body.openFinanceClientSecret.trim() : "",
+    openFinanceUserId: typeof body.openFinanceUserId === "string" ? body.openFinanceUserId.trim() : "",
+    openFinanceApiPrefix: typeof body.openFinanceApiPrefix === "string" && body.openFinanceApiPrefix.trim()
+      ? body.openFinanceApiPrefix.trim()
+      : "api",
+  };
+}
+
+function normalizeBudgetPreferences(body: Partial<typeof PREFS_DEFAULT>) {
+  const threshold = Number(body.highAmountThreshold);
+  return {
+    sectionOverrides: body.sectionOverrides && typeof body.sectionOverrides === "object" ? body.sectionOverrides : {},
+    oneTimeExpenses: Array.isArray(body.oneTimeExpenses) ? body.oneTimeExpenses : [],
+    fixedExpenses: Array.isArray(body.fixedExpenses) ? body.fixedExpenses : [],
+    highAmountThreshold: Number.isFinite(threshold) && threshold >= 0 ? threshold : PREFS_DEFAULT.highAmountThreshold,
+  };
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown) {
@@ -198,6 +234,11 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       data TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS service_settings (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      data TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   const getUserBySession = db.prepare(`
@@ -220,6 +261,12 @@ function preferencesAuth(env: Record<string, string>): Plugin {
   const getPrefs = db.prepare("SELECT data FROM preferences WHERE user_id = ?");
   const upsertPrefs = db.prepare(`
     INSERT INTO preferences (user_id, data, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP
+  `);
+  const getServiceSettings = db.prepare("SELECT data FROM service_settings WHERE user_id = ?");
+  const upsertServiceSettings = db.prepare(`
+    INSERT INTO service_settings (user_id, data, updated_at)
     VALUES (?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP
   `);
@@ -287,20 +334,38 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       }
       if (req.method === "GET") {
         const row = getPrefs.get(user.id) as { data: string } | undefined;
-        sendJson(res, 200, row ? JSON.parse(row.data) : PREFS_DEFAULT);
+        sendJson(res, 200, row ? normalizeBudgetPreferences(JSON.parse(row.data)) : PREFS_DEFAULT);
         return;
       }
       if (req.method === "PUT") {
         readBody(req)
           .then((raw) => {
-            const body = JSON.parse(raw);
-            const prefs = {
-              sectionOverrides: body.sectionOverrides && typeof body.sectionOverrides === "object" ? body.sectionOverrides : {},
-              oneTimeExpenses: Array.isArray(body.oneTimeExpenses) ? body.oneTimeExpenses : [],
-              fixedExpenses: Array.isArray(body.fixedExpenses) ? body.fixedExpenses : [],
-            };
+            const prefs = normalizeBudgetPreferences(JSON.parse(raw));
             upsertPrefs.run(user.id, JSON.stringify(prefs));
             sendJson(res, 200, prefs);
+          })
+          .catch((err: unknown) => sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) }));
+        return;
+      }
+    }
+
+    if (url.pathname === "/api/service-settings") {
+      const user = currentUser(req);
+      if (!user) {
+        sendJson(res, 401, { error: "AUTH_REQUIRED" });
+        return;
+      }
+      if (req.method === "GET") {
+        const row = getServiceSettings.get(user.id) as { data: string } | undefined;
+        sendJson(res, 200, row ? normalizeServiceSettings(JSON.parse(row.data)) : EMPTY_SERVICE_SETTINGS);
+        return;
+      }
+      if (req.method === "PUT") {
+        readBody(req)
+          .then((raw) => {
+            const settings = normalizeServiceSettings(JSON.parse(raw));
+            upsertServiceSettings.run(user.id, JSON.stringify(settings));
+            sendJson(res, 200, settings);
           })
           .catch((err: unknown) => sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) }));
         return;
@@ -322,40 +387,80 @@ function preferencesAuth(env: Record<string, string>): Plugin {
 }
 
 function openFinanceProxy(env: Record<string, string>): Plugin {
-  const clientId = env.OPEN_FINANCE_CLIENT_ID ?? "";
-  const clientSecret = env.OPEN_FINANCE_CLIENT_SECRET ?? "";
-  const userId = env.OPEN_FINANCE_USER_ID ?? "";
-  const apiPrefix = env.OPEN_FINANCE_API_PREFIX || "api";
-  const configured = Boolean(clientId && clientSecret && userId);
+  const dbPath = env.BUDGET_DB_PATH || join(process.cwd(), ".data", "budget.sqlite");
+  const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+  mkdirSync(dirname(dbPath), { recursive: true });
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE IF NOT EXISTS service_settings (
+      user_id TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
 
-  let token: { value: string; expiresAt: number } | null = null;
+  const getUserBySession = db.prepare(`
+    SELECT users.id, users.email, users.name, users.picture
+    FROM sessions
+    JOIN users ON users.id = sessions.user_id
+    WHERE sessions.token_hash = ? AND sessions.expires_at > ?
+  `);
+  const getServiceSettings = db.prepare("SELECT data FROM service_settings WHERE user_id = ?");
 
-  async function getToken(): Promise<string> {
+  const tokens = new Map<string, { value: string; expiresAt: number }>();
+
+  function currentUser(req: IncomingMessage) {
+    const token = parseCookies(req)[SESSION_COOKIE];
+    if (!token) return null;
+    return getUserBySession.get(tokenHash(token), Date.now()) as
+      | { id: string; email: string; name: string; picture: string }
+      | undefined
+      | null;
+  }
+
+  function settingsForUser(userId: string): ServiceSettings {
+    const row = getServiceSettings.get(userId) as { data: string } | undefined;
+    return row ? normalizeServiceSettings(JSON.parse(row.data)) : EMPTY_SERVICE_SETTINGS;
+  }
+
+  function isConfigured(settings: ServiceSettings): boolean {
+    return Boolean(settings.openFinanceClientId && settings.openFinanceClientSecret && settings.openFinanceUserId);
+  }
+
+  async function getToken(ownerId: string, settings: ServiceSettings): Promise<string> {
+    const token = tokens.get(ownerId);
     if (token && Date.now() < token.expiresAt - 60_000) return token.value;
     const res = await fetch(TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId, clientId, clientSecret }),
+      body: JSON.stringify({
+        userId: settings.openFinanceUserId,
+        clientId: settings.openFinanceClientId,
+        clientSecret: settings.openFinanceClientSecret,
+      }),
     });
     if (!res.ok) {
       throw new Error(`Token request failed (${res.status}): ${await res.text()}`);
     }
     const body = (await res.json()) as { accessToken: string; expiresIn?: number };
     // expiresIn is in milliseconds per the docs' example (3600000)
-    token = { value: body.accessToken, expiresAt: Date.now() + (body.expiresIn ?? 3_600_000) };
-    return token.value;
+    tokens.set(ownerId, { value: body.accessToken, expiresAt: Date.now() + (body.expiresIn ?? 3_600_000) });
+    return body.accessToken;
   }
 
   async function fetchTransactions(
+    ownerId: string,
+    settings: ServiceSettings,
     from: string,
     to: string,
     providerType: "BANK" | "CARD"
   ): Promise<RawTransaction[]> {
-    const accessToken = await getToken();
+    const accessToken = await getToken(ownerId, settings);
     const items: RawTransaction[] = [];
     let nextPage: string | undefined;
     do {
-      const url = new URL(`https://${apiPrefix}.open-finance.ai/v2/data/transactions`);
+      const url = new URL(`https://${settings.openFinanceApiPrefix}.open-finance.ai/v2/data/transactions`);
       url.searchParams.set("dateFrom", from);
       url.searchParams.set("dateTo", to);
       url.searchParams.set("sort", "1");
@@ -397,12 +502,12 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     };
   }
 
-  async function fetchAccounts(): Promise<RawAccount[]> {
-    const accessToken = await getToken();
+  async function fetchAccounts(ownerId: string, settings: ServiceSettings): Promise<RawAccount[]> {
+    const accessToken = await getToken(ownerId, settings);
     const items: RawAccount[] = [];
     let nextPage: string | undefined;
     do {
-      const url = new URL(`https://${apiPrefix}.open-finance.ai/v2/data/accounts`);
+      const url = new URL(`https://${settings.openFinanceApiPrefix}.open-finance.ai/v2/data/accounts`);
       if (nextPage) url.searchParams.set("nextPage", nextPage);
       const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
       if (!res.ok) {
@@ -419,16 +524,23 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     if (url.pathname === "/api/status") {
-      sendJson(res, 200, { configured });
+      const user = currentUser(req);
+      if (!user) {
+        sendJson(res, 200, { configured: false });
+        return;
+      }
+      sendJson(res, 200, { configured: isConfigured(settingsForUser(user.id)) });
       return;
     }
 
     if (url.pathname === "/api/accounts") {
-      if (!configured) {
+      const user = currentUser(req);
+      const settings = user ? settingsForUser(user.id) : EMPTY_SERVICE_SETTINGS;
+      if (!user || !isConfigured(settings)) {
         sendJson(res, 503, { error: "NOT_CONFIGURED" });
         return;
       }
-      fetchAccounts()
+      fetchAccounts(user.id, settings)
         .then((items) => {
           const accounts = items.map((raw, i) => {
             const balance = pickBalance(raw.balances);
@@ -451,7 +563,9 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     }
 
     if (url.pathname === "/api/transactions") {
-      if (!configured) {
+      const user = currentUser(req);
+      const settings = user ? settingsForUser(user.id) : EMPTY_SERVICE_SETTINGS;
+      if (!user || !isConfigured(settings)) {
         sendJson(res, 503, { error: "NOT_CONFIGURED" });
         return;
       }
@@ -462,8 +576,8 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
         return;
       }
       Promise.all([
-        fetchTransactions(from, to, "BANK"),
-        fetchTransactions(from, to, "CARD"),
+        fetchTransactions(user.id, settings, from, to, "BANK"),
+        fetchTransactions(user.id, settings, from, to, "CARD"),
       ])
         .then(([bank, card]) => {
           const flows = [

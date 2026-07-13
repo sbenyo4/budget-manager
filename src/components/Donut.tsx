@@ -1,5 +1,7 @@
 import { useState } from "react";
+import type { Transaction } from "../types";
 import { formatILS } from "./format";
+import { transactionHighlightClass } from "./transactionHighlight";
 
 export interface DonutSlice {
   key: string;
@@ -23,13 +25,10 @@ export interface DonutSliceDetail {
   fixedOverride?: boolean;
 }
 
-export interface DonutSliceDetailTransaction {
-  id: string;
-  date: string;
-  merchant: string;
-  amount: number;
-  source?: string;
-}
+export type DonutSliceDetailTransaction = Pick<
+  Transaction,
+  "id" | "date" | "merchant" | "amount" | "source" | "type" | "categoryMain" | "categorySub"
+>;
 
 export interface CategoryChoice {
   value: string;
@@ -50,6 +49,7 @@ interface Props {
   onCategorizeDetail?: (detailKey: string, category: string) => void;
   onToggleOneTimeDetail?: (detailKey: string) => void;
   onToggleFixedDetail?: (detailKey: string) => void;
+  highAmountThreshold?: number;
 }
 
 const CX = 110;
@@ -89,6 +89,7 @@ export function Donut({
   onCategorizeDetail,
   onToggleOneTimeDetail,
   onToggleFixedDetail,
+  highAmountThreshold = 5000,
 }: Props) {
   const rawTotal = slices.reduce((sum, s) => sum + s.value, 0);
   const activeSlices = slices.filter((s) => !excludedKeys?.has(s.key));
@@ -148,7 +149,7 @@ export function Donut({
         </svg>
         <ul className="donut-legend">
           {slices.map((s) => {
-            const hasDetails = Boolean(s.details?.length);
+            const hasDetails = Boolean(s.details?.length) || Boolean(onExpand);
             const isExpanded = expandedKey === s.key;
             const detailCategoryOptions = categoryOptions ?? [];
             return (
@@ -203,6 +204,7 @@ export function Donut({
                                     detail={child}
                                     isOpen={expandedDetailKeys.has(child.key)}
                                     onToggle={() => toggleDetail(child.key)}
+                                    highAmountThreshold={highAmountThreshold}
                                   />
                                   <DetailActions
                                     detail={child}
@@ -222,6 +224,7 @@ export function Donut({
                               detail={d}
                               isOpen={expandedDetailKeys.has(d.key)}
                               onToggle={() => toggleDetail(d.key)}
+                              highAmountThreshold={highAmountThreshold}
                             />
                             {d.key !== "__other" && !d.key.startsWith("section:") && (
                               <DetailActions
@@ -252,10 +255,12 @@ function DetailSummary({
   detail,
   isOpen,
   onToggle,
+  highAmountThreshold,
 }: {
   detail: DonutSliceDetail;
   isOpen: boolean;
   onToggle: () => void;
+  highAmountThreshold: number;
 }) {
   const canOpen = Boolean(detail.transactions?.length);
 
@@ -274,7 +279,7 @@ function DetailSummary({
       {canOpen && isOpen && (
         <ul className="legend-transaction-list">
           {detail.transactions?.map((tx) => (
-            <li key={tx.id} className="legend-transaction-row">
+            <li key={tx.id} className={`legend-transaction-row ${transactionHighlightClass(tx, highAmountThreshold)}`}>
               <span className="legend-transaction-date">
                 {new Date(`${tx.date}T00:00:00`).toLocaleDateString("he-IL", {
                   day: "numeric",
