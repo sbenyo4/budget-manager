@@ -11,12 +11,28 @@ export interface BudgetPreferences {
   sectionOverrides: Record<string, string>;
   oneTimeExpenses: string[];
   fixedExpenses: string[];
+  highAmountThreshold: number;
+}
+
+export interface ServiceSettings {
+  openFinanceClientId: string;
+  openFinanceClientSecret: string;
+  openFinanceUserId: string;
+  openFinanceApiPrefix: string;
 }
 
 export const PREFS_DEFAULT: BudgetPreferences = {
   sectionOverrides: {},
   oneTimeExpenses: [],
   fixedExpenses: [],
+  highAmountThreshold: 5000,
+};
+
+export const SERVICE_SETTINGS_DEFAULT: ServiceSettings = {
+  openFinanceClientId: "",
+  openFinanceClientSecret: "",
+  openFinanceUserId: "",
+  openFinanceApiPrefix: "api",
 };
 
 let schemaReady: Promise<void> | null = null;
@@ -51,6 +67,13 @@ export function ensureSchema(): Promise<void> {
       `,
       db`
         CREATE TABLE IF NOT EXISTS preferences (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+      `,
+      db`
+        CREATE TABLE IF NOT EXISTS service_settings (
         user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
         data JSONB NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -107,7 +130,7 @@ export async function getPreferences(userId: string): Promise<BudgetPreferences>
     WHERE user_id = ${userId}
     LIMIT 1
   `) as Array<{ data: BudgetPreferences }>;
-  return rows[0]?.data ?? PREFS_DEFAULT;
+  return { ...PREFS_DEFAULT, ...(rows[0]?.data ?? {}) };
 }
 
 export async function upsertPreferences(userId: string, prefs: BudgetPreferences): Promise<void> {
@@ -115,6 +138,28 @@ export async function upsertPreferences(userId: string, prefs: BudgetPreferences
   await sql()`
     INSERT INTO preferences (user_id, data, updated_at)
     VALUES (${userId}, ${JSON.stringify(prefs)}::jsonb, NOW())
+    ON CONFLICT (user_id) DO UPDATE SET
+      data = EXCLUDED.data,
+      updated_at = NOW()
+  `;
+}
+
+export async function getServiceSettings(userId: string): Promise<ServiceSettings> {
+  await ensureSchema();
+  const rows = (await sql()`
+    SELECT data
+    FROM service_settings
+    WHERE user_id = ${userId}
+    LIMIT 1
+  `) as Array<{ data: ServiceSettings }>;
+  return { ...SERVICE_SETTINGS_DEFAULT, ...(rows[0]?.data ?? {}) };
+}
+
+export async function upsertServiceSettings(userId: string, settings: ServiceSettings): Promise<void> {
+  await ensureSchema();
+  await sql()`
+    INSERT INTO service_settings (user_id, data, updated_at)
+    VALUES (${userId}, ${JSON.stringify(settings)}::jsonb, NOW())
     ON CONFLICT (user_id) DO UPDATE SET
       data = EXCLUDED.data,
       updated_at = NOW()

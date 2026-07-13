@@ -1,3 +1,5 @@
+import type { ServiceSettings } from "./db.js";
+
 const TOKEN_URL = "https://api.open-finance.ai/oauth/token";
 
 interface RawBalance {
@@ -30,37 +32,49 @@ interface RawTransaction {
   status?: string;
 }
 
-let token: { value: string; expiresAt: number } | null = null;
+const tokens = new Map<string, { value: string; expiresAt: number }>();
 
-export function isOpenFinanceConfigured(): boolean {
-  return Boolean(process.env.OPEN_FINANCE_CLIENT_ID && process.env.OPEN_FINANCE_CLIENT_SECRET && process.env.OPEN_FINANCE_USER_ID);
+export function isOpenFinanceConfigured(settings: ServiceSettings): boolean {
+  return Boolean(settings.openFinanceClientId && settings.openFinanceClientSecret && settings.openFinanceUserId);
 }
 
-async function getToken(): Promise<string> {
-  if (token && Date.now() < token.expiresAt - 60_000) return token.value;
-  const userId = process.env.OPEN_FINANCE_USER_ID ?? "";
-  const clientId = process.env.OPEN_FINANCE_CLIENT_ID ?? "";
-  const clientSecret = process.env.OPEN_FINANCE_CLIENT_SECRET ?? "";
+function tokenCacheKey(settings: ServiceSettings): string {
+  return `${settings.openFinanceApiPrefix}:${settings.openFinanceUserId}:${settings.openFinanceClientId}`;
+}
+
+async function getToken(settings: ServiceSettings): Promise<string> {
+  const cacheKey = tokenCacheKey(settings);
+  const cached = tokens.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt - 60_000) return cached.value;
   const res = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId, clientId, clientSecret }),
+    body: JSON.stringify({
+      userId: settings.openFinanceUserId,
+      clientId: settings.openFinanceClientId,
+      clientSecret: settings.openFinanceClientSecret,
+    }),
   });
   if (!res.ok) {
     throw new Error(`Token request failed (${res.status}): ${await res.text()}`);
   }
   const body = (await res.json()) as { accessToken: string; expiresIn?: number };
-  token = { value: body.accessToken, expiresAt: Date.now() + (body.expiresIn ?? 3_600_000) };
+  const token = { value: body.accessToken, expiresAt: Date.now() + (body.expiresIn ?? 3_600_000) };
+  tokens.set(cacheKey, token);
   return token.value;
 }
 
-async function fetchTransactions(from: string, to: string, providerType: "BANK" | "CARD"): Promise<RawTransaction[]> {
-  const accessToken = await getToken();
-  const apiPrefix = process.env.OPEN_FINANCE_API_PREFIX || "api";
+async function fetchTransactions(
+  settings: ServiceSettings,
+  from: string,
+  to: string,
+  providerType: "BANK" | "CARD"
+): Promise<RawTransaction[]> {
+  const accessToken = await getToken(settings);
   const items: RawTransaction[] = [];
   let nextPage: string | undefined;
   do {
-    const url = new URL(`https://${apiPrefix}.open-finance.ai/v2/data/transactions`);
+    const url = new URL(`https://${settings.openFinanceApiPrefix}.open-finance.ai/v2/data/transactions`);
     url.searchParams.set("dateFrom", from);
     url.searchParams.set("dateTo", to);
     url.searchParams.set("sort", "1");
@@ -108,10 +122,10 @@ function pickBalance(balances: RawBalance[] = []): RawBalance | undefined {
   return balances[0];
 }
 
-export async function getTransactions(from: string, to: string) {
+export async function getTransactions(settings: ServiceSettings, from: string, to: string) {
   const [bank, card] = await Promise.all([
-    fetchTransactions(from, to, "BANK"),
-    fetchTransactions(from, to, "CARD"),
+    fetchTransactions(settings, from, to, "BANK"),
+    fetchTransactions(settings, from, to, "CARD"),
   ]);
   return [
     ...bank.map((raw, i) => normalize(raw, i, "bank")),
@@ -119,13 +133,12 @@ export async function getTransactions(from: string, to: string) {
   ].filter((tx) => tx.date && tx.amount > 0);
 }
 
-export async function getAccounts() {
-  const accessToken = await getToken();
-  const apiPrefix = process.env.OPEN_FINANCE_API_PREFIX || "api";
+export async function getAccounts(settings: ServiceSettings) {
+  const accessToken = await getToken(settings);
   const items: RawAccount[] = [];
   let nextPage: string | undefined;
   do {
-    const url = new URL(`https://${apiPrefix}.open-finance.ai/v2/data/accounts`);
+    const url = new URL(`https://${settings.openFinanceApiPrefix}.open-finance.ai/v2/data/accounts`);
     if (nextPage) url.searchParams.set("nextPage", nextPage);
     const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!res.ok) {
@@ -149,4 +162,3 @@ export async function getAccounts() {
     };
   });
 }
-

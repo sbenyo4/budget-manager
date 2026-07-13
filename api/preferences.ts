@@ -4,11 +4,13 @@ import { currentUser } from "./lib/auth.js";
 import { getPreferences, upsertPreferences, type BudgetPreferences } from "./lib/db.js";
 
 function normalizePreferences(body: Partial<BudgetPreferences>): BudgetPreferences {
+  const threshold = Number(body.highAmountThreshold);
   return {
     sectionOverrides:
       body.sectionOverrides && typeof body.sectionOverrides === "object" ? body.sectionOverrides : {},
     oneTimeExpenses: Array.isArray(body.oneTimeExpenses) ? body.oneTimeExpenses : [],
     fixedExpenses: Array.isArray(body.fixedExpenses) ? body.fixedExpenses : [],
+    highAmountThreshold: Number.isFinite(threshold) && threshold >= 0 ? threshold : 5000,
   };
 }
 
