@@ -12,7 +12,7 @@ import {
   overrideKey,
 } from "../logic/categoryOverrides";
 import { Donut, type DonutSlice } from "./Donut";
-import { formatILS, todayIso } from "./format";
+import { formatILS, formatILSWhole, todayIso } from "./format";
 import { transactionHighlightClass } from "./transactionHighlight";
 
 interface Props {
@@ -248,7 +248,7 @@ export function MonthlyView({
               {categoryLabel(categoryFilter)} בתקופה זו
             </span>
             <span className="stat-value">
-              {formatILS(categorySummary?.expenseTotal ?? 0)}
+              {formatILSWhole(categorySummary?.expenseTotal ?? 0)}
             </span>
             <span className="stat-hint">
               {categorySummary?.expenseCount ?? 0} עסקאות הוצאה
@@ -262,7 +262,7 @@ export function MonthlyView({
           </div>
           <div className="stat-tile">
             <span className="stat-label">ממוצע לעסקה</span>
-            <span className="stat-value">{(categorySummary?.average ?? null) !== null ? formatILS(categorySummary?.average ?? 0) : "—"}</span>
+            <span className="stat-value">{(categorySummary?.average ?? null) !== null ? formatILSWhole(categorySummary?.average ?? 0) : "—"}</span>
             <span className="stat-hint">בקטגוריה זו</span>
           </div>
         </div>
@@ -271,25 +271,25 @@ export function MonthlyView({
       <div className="stat-tiles">
         <div className="stat-tile">
           <span className="stat-label">הכנסות לחשבון</span>
-          <span className="stat-value">{formatILS(bankIncome)}</span>
+          <span className="stat-value">{formatILSWhole(bankIncome)}</span>
           <span className="stat-hint">כל מה שנכנס לעו״ש</span>
         </div>
         <div className="stat-tile">
           <span className="stat-label">יצא מהחשבון</span>
-          <span className="stat-value">{formatILS(bankExpense)}</span>
+          <span className="stat-value">{formatILSWhole(bankExpense)}</span>
           <span className="stat-hint">כולל חיובי אשראי, ני״ע והעברות</span>
         </div>
         <div className="stat-tile highlight">
           <span className="stat-label">תזרים בתקופה</span>
           <span className={`stat-value ${net >= 0 ? "net-positive" : "net-negative"}`}>
-            {net >= 0 ? "▲" : "▼"} {formatILS(Math.abs(net))}
+            {net >= 0 ? "▲" : "▼"} {formatILSWhole(Math.abs(net))}
           </span>
           <span className="stat-hint">הכנסות לעו״ש פחות יציאות אמיתיות מהעו״ש</span>
         </div>
         <div className={bankBalance ? "stat-tile highlight" : "stat-tile"}>
           <span className="stat-label">{bankBalance ? "יתרת עו״ש בפועל" : "יתרת עו״ש בפועל"}</span>
           <span className={`stat-value ${bankBalance && bankBalance.balance < 0 ? "net-negative" : "net-positive"}`}>
-            {bankBalance ? formatILS(bankBalance.balance) : "—"}
+            {bankBalance ? formatILSWhole(bankBalance.balance) : "—"}
           </span>
           <span className="stat-hint">
             {bankBalance
@@ -300,7 +300,7 @@ export function MonthlyView({
         <div className="stat-tile">
           <span className="stat-label">יתרה בסוף התקופה</span>
           <span className={`stat-value ${balanceAtPeriodEnd !== null && balanceAtPeriodEnd < 0 ? "net-negative" : ""}`}>
-            {balanceAtPeriodEnd !== null ? formatILS(balanceAtPeriodEnd) : "—"}
+            {balanceAtPeriodEnd !== null ? formatILSWhole(balanceAtPeriodEnd) : "—"}
           </span>
           <span className="stat-hint">
             {balanceAtPeriodStart !== null
@@ -310,7 +310,7 @@ export function MonthlyView({
         </div>
         <div className="stat-tile">
           <span className="stat-label">אשראי שטרם חויב ⏳</span>
-          <span className="stat-value">{formatILS(pendingTotal)}</span>
+          <span className="stat-value">{formatILSWhole(pendingTotal)}</span>
           <span className="stat-hint">
             {lastDebitDate
               ? `עסקאות כרטיס מאז החיוב האחרון (${lastDebitDate.slice(8, 10)}.${lastDebitDate.slice(5, 7)}) — יירדו בחיוב הבא`

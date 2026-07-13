@@ -14,7 +14,7 @@ import {
   type SectionOverrides,
 } from "../logic/categoryOverrides";
 import { Donut, type CategoryChoice, type DonutSlice, type DonutSliceDetail } from "./Donut";
-import { formatILS } from "./format";
+import { formatILS, formatILSWhole } from "./format";
 
 interface Props {
   transactions: Transaction[];
@@ -58,13 +58,6 @@ type ExpenseScope = "all" | "fixed" | "variable";
 
 /** Money movements that are neither earnings nor consumption. */
 const NON_FLOW_MAINS = new Set(["TRADING", "TRANSFER", "ASSETS", "DEPOSIT"]);
-const AUTO_FIXED_CATEGORIES = new Set([
-  "HOUSEHOLD_&_SERVICES",
-  "HEALTH_&_BEAUTY",
-  "LOAN_TRANSACTION",
-  "CUSTOM:מינויים",
-]);
-
 function fixedExpenseKey(tx: Transaction): string {
   return `${tx.categoryMain}::${merchantKey(tx)}`;
 }
@@ -81,27 +74,12 @@ function expenseScopeLabel(expenseScope: ExpenseScope): string {
   return "כולל קבועות וחד פעמיות";
 }
 
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)] ?? 0;
-}
-
-function hasStableAmount(transactions: Transaction[]): boolean {
-  if (transactions.length < 3) return false;
-  const amounts = transactions.map((tx) => tx.amount);
-  const med = median(amounts);
-  if (med <= 0) return false;
-  return amounts.every((amount) => Math.abs(amount - med) <= Math.max(10, med * 0.15));
-}
-
-function isAutoFixedGroup(category: string, group: { periodKeys: Set<string>; recurring: boolean; transactions: Transaction[] }): boolean {
-  if (group.recurring) return true;
-  if (!AUTO_FIXED_CATEGORIES.has(category)) return false;
-  return group.periodKeys.size >= 3 && hasStableAmount(group.transactions);
-}
-
 function isRepeatVariableGroup(group: { count: number; periodKeys: Set<string> }): boolean {
   return group.periodKeys.size >= 2 || group.count >= 2;
+}
+
+function isFixedGroup(group: { count: number; periodKeys: Set<string>; recurring: boolean }): boolean {
+  return group.recurring || isRepeatVariableGroup(group);
 }
 
 function metricsFor(
@@ -211,7 +189,7 @@ function fixedBreakdownFor(
     const detailKey = overrideKey(category, key);
     const isForcedFixed = fixedKeys.has(detailKey);
     const isOneTime = oneTimeKeys.has(detailKey) && !isForcedFixed;
-    const isFixed = isForcedFixed || (!isOneTime && isAutoFixedGroup(category, group));
+    const isFixed = isForcedFixed || (!isOneTime && isFixedGroup(group));
     if (!isFixed) {
       const isRepeatVariable = !isOneTime && isRepeatVariableGroup(group);
       const child: FixedBreakdownRow = {
@@ -282,14 +260,15 @@ function fixedExpenseKeysFor(
   oneTimeKeys: Set<string>,
   forcedFixedKeys: Set<string>
 ): Set<string> {
-  const groups = new Map<string, { tx: Transaction; periodKeys: Set<string>; recurring: boolean; transactions: Transaction[] }>();
+  const groups = new Map<string, { tx: Transaction; count: number; periodKeys: Set<string>; recurring: boolean; transactions: Transaction[] }>();
 
   for (const tx of transactions) {
     if (tx.type === "income" || !isConsumption(tx)) continue;
     if (tx.date < from || tx.date > to) continue;
     const key = fixedExpenseKey(tx);
     const periodKey = periodKeyFor(tx.date, periods);
-    const group = groups.get(key) ?? { tx, periodKeys: new Set<string>(), recurring: false, transactions: [] };
+    const group = groups.get(key) ?? { tx, count: 0, periodKeys: new Set<string>(), recurring: false, transactions: [] };
+    group.count += 1;
     group.recurring = group.recurring || Boolean(tx.recurring);
     group.transactions.push(tx);
     if (periodKey) group.periodKeys.add(periodKey);
@@ -304,7 +283,7 @@ function fixedExpenseKeysFor(
       continue;
     }
     if (oneTimeKeys.has(oneTimeKey)) continue;
-    if (isAutoFixedGroup(group.tx.categoryMain, group)) fixedKeys.add(key);
+    if (isFixedGroup(group)) fixedKeys.add(key);
   }
   return fixedKeys;
 }
@@ -674,7 +653,7 @@ export function TrendsView({
               <span className="swatch" style={{ background: mainColor(category) }} aria-hidden />{" "}
               סה״כ {categoryLabel(category)}
             </span>
-            <span className="stat-value">{formatILS(totals.catExpense)}</span>
+            <span className="stat-value">{formatILSWhole(totals.catExpense)}</span>
             <span className="stat-hint">
               {selectedCategoryExcluded
                 ? "כבויה מהחישוב"
@@ -683,7 +662,7 @@ export function TrendsView({
           </div>
           <div className="stat-tile">
             <span className="stat-label">ממוצע לתקופה</span>
-            <span className="stat-value">{formatILS(totals.catExpense / n)}</span>
+            <span className="stat-value">{formatILSWhole(totals.catExpense / n)}</span>
             <span className="stat-hint">בקטגוריה זו</span>
           </div>
           <div className="stat-tile">
@@ -705,7 +684,7 @@ export function TrendsView({
         <div className="stat-tiles">
           <div className="stat-tile">
             <span className="stat-label">סה״כ הכנסות</span>
-            <span className="stat-value">{formatILS(totals.income)}</span>
+            <span className="stat-value">{formatILSWhole(totals.income)}</span>
             <span className="stat-hint">ממוצע {formatILS(totals.income / n)} לתקופה</span>
           </div>
           <div className="stat-tile">
@@ -716,7 +695,7 @@ export function TrendsView({
                   ? "סה״כ הוצאות לא קבועות"
                   : "סה״כ הוצאות מחושב"}
             </span>
-            <span className="stat-value">{formatILS(totals.expense)}</span>
+            <span className="stat-value">{formatILSWhole(totals.expense)}</span>
             <span className="stat-hint">
               {excludedTotal > 0
                 ? `ממוצע ${formatILS(totals.expense / n)} אחרי כיבוי · לפני: ${formatILS(grossExpenseTotal / n)}`
@@ -725,7 +704,7 @@ export function TrendsView({
           </div>
           <div className="stat-tile">
             <span className="stat-label">חיסכון והשקעות 📈</span>
-            <span className="stat-value">{formatILS(totals.securities)}</span>
+            <span className="stat-value">{formatILSWhole(totals.securities)}</span>
             <span className="stat-hint">
               ממוצע {formatILS(totals.securities / n)} לתקופה · ני״ע, פיקדונות והעברות להשקעה, בניכוי משיכות
             </span>
@@ -734,7 +713,7 @@ export function TrendsView({
             <div className="stat-tile highlight">
               <span className="stat-label">יתרת עו״ש בפועל 🏦</span>
               <span className={`stat-value ${bankBalance.balance >= 0 ? "net-positive" : "net-negative"}`}>
-                {formatILS(bankBalance.balance)}
+                {formatILSWhole(bankBalance.balance)}
               </span>
               <span className="stat-hint">
                 מהבנק, נכון ל-{bankBalance.date.slice(8, 10)}.{bankBalance.date.slice(5, 7)} · תזרים בטווח:{" "}
@@ -745,7 +724,7 @@ export function TrendsView({
             <div className="stat-tile highlight">
               <span className="stat-label">נשאר בעו״ש (מצטבר)</span>
               <span className={`stat-value ${leftoverTotal >= 0 ? "net-positive" : "net-negative"}`}>
-                {leftoverTotal >= 0 ? "▲" : "▼"} {formatILS(Math.abs(leftoverTotal))}
+                {leftoverTotal >= 0 ? "▲" : "▼"} {formatILSWhole(Math.abs(leftoverTotal))}
               </span>
               <span className="stat-hint">הכנסות − הוצאות − חיסכון, על פני כל הטווח</span>
             </div>

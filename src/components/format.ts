@@ -5,8 +5,18 @@ const ilsFormatter = new Intl.NumberFormat("he-IL", {
   maximumFractionDigits: 2,
 });
 
+const wholeIlsFormatter = new Intl.NumberFormat("he-IL", {
+  style: "currency",
+  currency: "ILS",
+  maximumFractionDigits: 0,
+});
+
 export function formatILS(amount: number): string {
   return ilsFormatter.format(amount);
+}
+
+export function formatILSWhole(amount: number): string {
+  return wholeIlsFormatter.format(amount);
 }
 
 export function formatHebrewDate(iso: string): string {

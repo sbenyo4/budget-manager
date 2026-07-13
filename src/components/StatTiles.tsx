@@ -1,5 +1,5 @@
 import type { ClassifiedTransaction } from "../types";
-import { formatILS } from "./format";
+import { formatILSWhole } from "./format";
 
 interface Props {
   transactions: ClassifiedTransaction[];
@@ -25,12 +25,12 @@ export function StatTiles({ transactions, year, month }: Props) {
     <div className="stat-tiles">
       <div className="stat-tile">
         <span className="stat-label">הוצאות חובה</span>
-        <span className="stat-value">{formatILS(mandatoryTotal)}</span>
+        <span className="stat-value">{formatILSWhole(mandatoryTotal)}</span>
         <span className="stat-hint">משולמות כרגיל</span>
       </div>
       <div className="stat-tile highlight">
         <span className="stat-label">פוטנציאל חיסכון 💪</span>
-        <span className="stat-value avoid-ink">{formatILS(discretionaryTotal)}</span>
+        <span className="stat-value avoid-ink">{formatILSWhole(discretionaryTotal)}</span>
         <span className="stat-hint">סך ההוצאות המותרות שמהן נמנעים</span>
       </div>
       <div className="stat-tile">

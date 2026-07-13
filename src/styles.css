@@ -475,8 +475,11 @@ h1 {
 }
 
 .stat-value {
-  font-size: 1.9rem;
+  font-size: clamp(1.45rem, 2.1vw, 1.85rem);
   font-weight: 650;
+  line-height: 1.12;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: normal;
 }
 
 .stat-denominator {
@@ -506,9 +509,10 @@ h1 {
 }
 
 .monthly-view > .stat-tiles:not(.category-summary) .stat-value {
-  font-size: clamp(1.45rem, 1.9vw, 1.9rem);
-  line-height: 1.15;
+  font-size: clamp(1.2rem, 1.55vw, 1.65rem);
+  line-height: 1.12;
   white-space: nowrap;
+  max-width: 100%;
 }
 
 /* — calendar — */
