@@ -299,7 +299,11 @@ function BudgetApp() {
         <section className="login-panel">
           <div className="login-brand">
             <span className="login-mark" aria-hidden>
-              ₪
+              <svg viewBox="0 0 24 24" role="img">
+                <path d="M5 8.5h11.5A3.5 3.5 0 0 1 20 12v4.5A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-7A1.5 1.5 0 0 1 5.5 8H17" />
+                <path d="M4.8 8.2 12 5l3.4 3" />
+                <path d="M16 13.5h4" />
+              </svg>
             </span>
             <span className="login-kicker">Budget Manager</span>
           </div>
@@ -317,9 +321,6 @@ function BudgetApp() {
             <span>PIN אישי</span>
             <span>שמירה ב-DB</span>
           </div>
-          <p className="auth-origin-hint">
-            Origin נוכחי: <code>{window.location.origin}</code>
-          </p>
           {error && <div className="error-box">שגיאה: {error}</div>}
         </section>
       </div>
@@ -723,7 +724,7 @@ function GoogleLoginButton({
   useEffect(() => {
     if (!clientId) return;
     const script = document.createElement("script");
-    script.src = "https://accounts.google.com/gsi/client";
+    script.src = "https://accounts.google.com/gsi/client?hl=he";
     script.async = true;
     script.defer = true;
     script.onload = () => {
@@ -745,6 +746,9 @@ function GoogleLoginButton({
         size: "large",
         text: "signin_with",
         shape: "rectangular",
+        locale: "he",
+        logo_alignment: "right",
+        width: 280,
       });
     };
     document.head.appendChild(script);
@@ -756,5 +760,5 @@ function GoogleLoginButton({
   if (!clientId) {
     return <div className="error-box">חסר GOOGLE_CLIENT_ID בקובץ .env</div>;
   }
-  return <div ref={buttonRef} />;
+  return <div className="google-login-button" dir="rtl" ref={buttonRef} />;
 }

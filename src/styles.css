@@ -273,13 +273,16 @@ h1 {
   padding: 30px;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 18px;
+  text-align: center;
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.08);
 }
 
 .login-brand {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
   color: var(--text-secondary);
 }
@@ -292,8 +295,17 @@ h1 {
   border-radius: 8px;
   background: var(--must);
   color: #ffffff;
-  font-weight: 750;
-  font-size: 1.25rem;
+}
+
+.login-mark svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .login-kicker {
@@ -307,14 +319,31 @@ h1 {
   margin-bottom: 0;
 }
 
+.login-panel .subtitle {
+  margin-inline: auto;
+}
+
 .login-card-actions {
+  width: 100%;
   min-height: 44px;
   display: flex;
   align-items: center;
+  justify-content: center;
+}
+
+.login-card-actions > div {
+  display: flex;
+  justify-content: center;
+}
+
+.google-login-button {
+  width: 280px;
+  max-width: 100%;
 }
 
 .login-assurance {
   display: flex;
+  justify-content: center;
   gap: 8px;
   flex-wrap: wrap;
 }
@@ -326,22 +355,6 @@ h1 {
   background: var(--control-wash);
   color: var(--text-secondary);
   font-size: 0.82rem;
-}
-
-.auth-origin-hint {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 0.9rem;
-}
-
-.auth-origin-hint code {
-  display: inline-block;
-  direction: ltr;
-  background: var(--page);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 2px 6px;
-  color: var(--text-primary);
 }
 
 .pin-panel {
