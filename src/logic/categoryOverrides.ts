@@ -137,6 +137,17 @@ const RECURRING_MERCHANT_PATTERNS = [
 ];
 
 const BRAND_MATCH_TOKENS = ["spotify", "ספוטיפיי", "netflix", "נטפליקס", "openai", "chatgpt", "icloud"];
+const GENERIC_MERCHANT_TOKENS = new Set([
+  "paypal",
+  "paybox",
+  "bit",
+  "visa",
+  "max",
+  "cal",
+  "isracard",
+  "mastercard",
+  "amex",
+]);
 
 export function loadSectionOverrides(): SectionOverrides {
   return {};
@@ -208,6 +219,12 @@ function compactMerchantFingerprint(merchant: string): string {
   return merchantFingerprint(merchant).replace(/\s+/g, "");
 }
 
+function meaningfulMerchantTokens(merchant: string): string[] {
+  return merchant
+    .split(" ")
+    .filter((token) => token.length >= 4 && !GENERIC_MERCHANT_TOKENS.has(token));
+}
+
 function canonicalCategoryKey(labelOrKey: string): string | undefined {
   const normalized = labelOrKey.trim().toLowerCase();
   if (!normalized) return undefined;
@@ -262,8 +279,8 @@ function merchantsLookSimilar(a: string, b: string): boolean {
     return true;
   }
 
-  const tokensA = new Set(a.split(" ").filter((token) => token.length >= 4));
-  const tokensB = b.split(" ").filter((token) => token.length >= 4);
+  const tokensA = new Set(meaningfulMerchantTokens(a));
+  const tokensB = meaningfulMerchantTokens(b);
   return tokensB.some((token) => tokensA.has(token));
 }
 
@@ -276,11 +293,46 @@ function learnedCategoryForMerchant(
   return match ? { category: match.category, recurring: match.recurring } : {};
 }
 
+interface SavedOverride {
+  merchant: string;
+  category: string;
+}
+
+function savedOverridesFor(overrides: SectionOverrides): SavedOverride[] {
+  return Object.entries(overrides).flatMap(([key, category]) => {
+    if (key.startsWith("section:") || key.includes("::")) return [];
+    const normalizedCategory = normalizeCategoryKey(category);
+    return normalizedCategory ? [{ merchant: merchantFingerprint(key), category: normalizedCategory }] : [];
+  });
+}
+
+function savedCategoryForMerchant(
+  merchant: string,
+  overrides: SectionOverrides,
+  savedOverrides: SavedOverride[]
+): string | undefined {
+  const exact = normalizeCategoryKey(overrides[overrideKey("", merchant)] ?? "");
+  if (exact) return exact;
+
+  const normalized = merchantFingerprint(merchant);
+  for (const saved of savedOverrides) {
+    if (merchantsLookSimilar(normalized, saved.merchant)) {
+      return saved.category;
+    }
+  }
+  return undefined;
+}
+
+function transactionAndDetails(tx: Transaction): Transaction[] {
+  return [tx, ...(tx.detailTransactions ?? [])];
+}
+
 export function applyCategoryOverrides(transactions: Transaction[], overrides: SectionOverrides): Transaction[] {
-  const learned = transactions.flatMap((tx) => {
+  const savedOverrides = savedOverridesFor(overrides);
+  const learned = transactions.flatMap((tx) => transactionAndDetails(tx)).flatMap((tx) => {
     const merchant = merchantKey(tx);
     const category =
-      normalizeCategoryKey(overrides[overrideKey(tx.categoryMain, merchant)] ?? "") ||
+      savedCategoryForMerchant(merchant, overrides, savedOverrides) ||
       defaultCategoryForMerchant(merchant) ||
       normalizeCategoryKey(tx.categoryMain);
     return isUsefulLearnedCategory(category)
@@ -288,21 +340,25 @@ export function applyCategoryOverrides(transactions: Transaction[], overrides: S
       : [];
   });
 
-  return transactions.map((tx) => {
+  const applyToTransaction = (tx: Transaction): Transaction => {
     const merchant = merchantKey(tx);
     const learnedMatch = learnedCategoryForMerchant(merchant, learned);
     const target =
-      normalizeCategoryKey(overrides[overrideKey(tx.categoryMain, merchant)] ?? "") ||
+      savedCategoryForMerchant(merchant, overrides, savedOverrides) ||
       defaultCategoryForMerchant(merchant) ||
       learnedMatch.category;
     const recurring = tx.recurring || isKnownRecurringMerchant(merchant) || learnedMatch.recurring;
-    if (!target && !recurring) return tx;
+    const detailTransactions = tx.detailTransactions?.map(applyToTransaction);
+    if (!target && !recurring && !detailTransactions) return tx;
     return {
       ...tx,
       ...(target ? { categoryMain: target, categorySub: "USER_DEFINED" } : {}),
       ...(recurring ? { recurring: true } : {}),
+      ...(detailTransactions ? { detailTransactions } : {}),
     };
-  });
+  };
+
+  return transactions.map(applyToTransaction);
 }
 
 export function categoryChoices(categories: string[], overrides: SectionOverrides) {

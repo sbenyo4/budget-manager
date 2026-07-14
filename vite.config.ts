@@ -65,6 +65,8 @@ function pickBalance(balances: RawBalance[] = []): RawBalance | undefined {
 
 interface RawTransaction {
   id?: string;
+  accountNumber?: string;
+  providerId?: string;
   date?: { valueDate?: string; bookingDate?: string; transactionDate?: string };
   amount?: {
     originalAmount?: { amount?: number; currency?: string };
@@ -546,35 +548,199 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     return items;
   }
 
+  function finiteAmount(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  }
+
   function rawAmount(raw: RawTransaction): number {
-    return raw.amount?.chargedAmount?.amount ?? raw.amount?.originalAmount?.amount ?? 0;
+    const charged = finiteAmount(raw.amount?.chargedAmount?.amount);
+    if (charged !== undefined) return charged;
+
+    const original = finiteAmount(raw.amount?.originalAmount?.amount);
+    const installmentTotal = raw.installments?.total;
+    if (original !== undefined && installmentTotal && installmentTotal > 1) {
+      return original / installmentTotal;
+    }
+    return original ?? 0;
+  }
+
+  function rawOriginalAmount(raw: RawTransaction): number | undefined {
+    return finiteAmount(raw.amount?.originalAmount?.amount);
   }
 
   function isCardInstallment(raw: RawTransaction): boolean {
     return Boolean(raw.isCreditCardInstallment || raw.installments);
   }
 
+  function normalizeDate(value: string): string {
+    return value.slice(0, 10);
+  }
+
+  function cardLast4(raw: RawTransaction, source: "bank" | "card"): string | undefined {
+    if (source === "card") {
+      const digits = raw.accountNumber?.replace(/\D/g, "") ?? "";
+      return digits.length >= 4 ? digits.slice(-4) : undefined;
+    }
+
+    const isBankCardDebit =
+      raw.category?.main === "INCOMES_EXPENSES" && raw.category?.sub === "CREDIT_CARD_CHECKING";
+    if (!isBankCardDebit) return undefined;
+
+    const info = raw.description?.additionalInfo ?? "";
+    const idMatch = info.match(/מזהה\s*(\d{4,})/);
+    return idMatch ? idMatch[1].slice(-4) : undefined;
+  }
+
   function normalize(raw: RawTransaction, index: number, source: "bank" | "card") {
-    const date =
+    const rawDate =
       source === "card"
-        ? isCardInstallment(raw)
-          ? raw.date?.valueDate ?? raw.date?.transactionDate ?? raw.date?.bookingDate ?? ""
-          : raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? ""
+        ? raw.date?.transactionDate ?? raw.date?.bookingDate ?? raw.date?.valueDate ?? ""
         : raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? "";
+    const billingDate = source === "card" && raw.date?.valueDate ? normalizeDate(raw.date.valueDate) : undefined;
+    const amount = rawAmount(raw);
+    const originalAmount = rawOriginalAmount(raw);
+    const last4 = cardLast4(raw, source);
+    const installment = isCardInstallment(raw)
+      ? { number: raw.installments?.number, total: raw.installments?.total }
+      : undefined;
 
     return {
       id: raw.id ? `${source}:${raw.id}` : `${source}-tx-${index}`,
       source,
-      // Use purchase date for regular card purchases. Installments use the
-      // billing date so each monthly charge lands in the right month.
-      date,
+      date: normalizeDate(rawDate),
+      ...(billingDate ? { billingDate } : {}),
+      ...(last4 ? { cardLast4: last4 } : {}),
+      ...(raw.providerId ? { cardProvider: raw.providerId } : {}),
       merchant: raw.merchantName || raw.description?.description || "לא ידוע",
-      amount: Math.abs(rawAmount(raw)),
+      amount: Math.abs(amount),
+      ...(originalAmount !== undefined && Math.abs(originalAmount) !== Math.abs(amount)
+        ? { originalAmount: Math.abs(originalAmount) }
+        : {}),
+      ...(installment ? { installment } : {}),
       // outflows are negative in this API; positives are income/refunds
-      type: rawAmount(raw) > 0 ? "income" : "expense",
+      type: amount > 0 ? "income" : "expense",
       categoryMain: raw.category?.main ?? "OTHER",
       categorySub: raw.category?.sub ?? "UNCATEGORIZED",
     };
+  }
+
+  type DevTransaction = ReturnType<typeof normalize> & { detailTransactions?: DevPublicTransaction[] };
+  type DevPublicTransaction = Omit<DevTransaction, "detailTransactions">;
+
+  function isCardDebit(tx: DevTransaction): boolean {
+    return tx.source === "bank" && tx.categoryMain === "INCOMES_EXPENSES" && tx.categorySub === "CREDIT_CARD_CHECKING";
+  }
+
+  function amountCents(value: number): number {
+    return Math.round(value * 100);
+  }
+
+  function assignDebitDetailsForDate(
+    debits: DevTransaction[],
+    groups: Array<{ totalCents: number; details: DevPublicTransaction[] }>
+  ): Map<string, DevPublicTransaction[]> {
+    const assignments = new Map<string, DevPublicTransaction[]>();
+    const usedGroupIndexes = new Set<number>();
+
+    for (const tx of debits) {
+      if (!tx.cardLast4) continue;
+      const groupIndex = groups.findIndex(
+        (group, index) => !usedGroupIndexes.has(index) && group.details.some((detail) => detail.cardLast4 === tx.cardLast4)
+      );
+      if (groupIndex >= 0) {
+        usedGroupIndexes.add(groupIndex);
+        assignments.set(tx.id, groups[groupIndex].details);
+      }
+    }
+
+    for (const tx of debits) {
+      if (assignments.has(tx.id)) continue;
+      const txAmountCents = amountCents(tx.amount);
+      const groupIndex = groups.findIndex(
+        (group, index) =>
+          !usedGroupIndexes.has(index) &&
+          group.totalCents === txAmountCents &&
+          (!tx.cardLast4 || group.details.some((detail) => detail.cardLast4 === tx.cardLast4))
+      );
+      if (groupIndex >= 0) {
+        usedGroupIndexes.add(groupIndex);
+        assignments.set(tx.id, groups[groupIndex].details);
+      }
+    }
+
+    const unmatchedDebits = debits.filter((tx) => !assignments.has(tx.id));
+    const unusedGroups = groups
+      .map((group, index) => ({ ...group, index }))
+      .filter((group) => !usedGroupIndexes.has(group.index));
+
+    if (unmatchedDebits.length === 1 && unusedGroups.length > 1) {
+      const totalCents = unusedGroups.reduce((total, group) => total + group.totalCents, 0);
+      if (Math.abs(totalCents - amountCents(unmatchedDebits[0].amount)) <= 1) {
+        assignments.set(unmatchedDebits[0].id, unusedGroups.flatMap((group) => group.details));
+        return assignments;
+      }
+    }
+
+    if (unmatchedDebits.length === unusedGroups.length) {
+      for (const tx of unmatchedDebits) {
+        const txAmountCents = amountCents(tx.amount);
+        const best = unusedGroups
+          .filter((group) => !usedGroupIndexes.has(group.index))
+          .map((group) => ({ ...group, delta: Math.abs(group.totalCents - txAmountCents) }))
+          .sort((a, b) => a.delta - b.delta)[0];
+        if (best && best.delta <= 1) {
+          usedGroupIndexes.add(best.index);
+          assignments.set(tx.id, best.details);
+        }
+      }
+    }
+
+    return assignments;
+  }
+
+  function attachCardDebitDetails(transactions: DevTransaction[]): DevTransaction[] {
+    const cardGroupsByBillingDate = new Map<string, Array<{ totalCents: number; details: DevPublicTransaction[] }>>();
+    const debitDetailsById = new Map<string, DevPublicTransaction[]>();
+
+    for (const tx of transactions) {
+      if (tx.source !== "card" || !tx.billingDate) continue;
+      const groups = cardGroupsByBillingDate.get(tx.billingDate) ?? [];
+      const key = `${tx.cardProvider ?? ""}:${tx.cardLast4 ?? ""}`;
+      const { detailTransactions: _detailTransactions, ...publicTx } = tx;
+      const existing = groups.find((group) => group.details[0] && `${group.details[0].cardProvider ?? ""}:${group.details[0].cardLast4 ?? ""}` === key);
+      if (existing) {
+        existing.totalCents += amountCents(tx.amount);
+        existing.details.push(publicTx);
+      } else {
+        groups.push({ totalCents: amountCents(tx.amount), details: [publicTx] });
+      }
+      cardGroupsByBillingDate.set(tx.billingDate, groups);
+    }
+
+    const debitsByDate = new Map<string, DevTransaction[]>();
+    for (const tx of transactions) {
+      if (!isCardDebit(tx)) continue;
+      const debits = debitsByDate.get(tx.date) ?? [];
+      debits.push(tx);
+      debitsByDate.set(tx.date, debits);
+    }
+
+  for (const [date, debits] of debitsByDate) {
+      const assignments = assignDebitDetailsForDate(debits, cardGroupsByBillingDate.get(date) ?? []);
+      for (const [id, details] of assignments) {
+        debitDetailsById.set(id, details);
+      }
+    }
+
+    return transactions.map((tx) => {
+      if (!isCardDebit(tx)) return tx;
+      const details = debitDetailsById.get(tx.id);
+      if (!details?.length) return tx;
+      return {
+        ...tx,
+        detailTransactions: [...details].sort((a, b) => b.date.localeCompare(a.date)),
+      };
+    });
   }
 
   async function fetchAccounts(ownerId: string, settings: ServiceSettings): Promise<RawAccount[]> {
@@ -655,10 +821,10 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
         fetchTransactions(user.id, settings, from, to, "CARD"),
       ])
         .then(([bank, card]) => {
-          const flows = [
+          const flows = attachCardDebitDetails([
             ...bank.map((raw, i) => normalize(raw, i, "bank")),
             ...card.map((raw, i) => normalize(raw, i, "card")),
-          ].filter((tx) => tx.date && tx.date >= from && tx.date <= to && tx.amount > 0);
+          ]).filter((tx) => tx.date && tx.date >= from && tx.date <= to && tx.amount > 0);
           sendJson(res, 200, flows);
         })
         .catch((err: unknown) => {

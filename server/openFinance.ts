@@ -21,6 +21,8 @@ interface RawAccount {
 
 interface RawTransaction {
   id?: string;
+  accountNumber?: string;
+  providerId?: string;
   date?: { valueDate?: string; bookingDate?: string; transactionDate?: string };
   amount?: {
     originalAmount?: { amount?: number; currency?: string };
@@ -39,11 +41,20 @@ interface NormalizedTransaction {
   duplicateKey?: string;
   source: "bank" | "card";
   date: string;
+  billingDate?: string;
+  cardLast4?: string;
+  cardProvider?: string;
   merchant: string;
   amount: number;
+  originalAmount?: number;
+  installment?: {
+    number?: number;
+    total?: number;
+  };
   type: "income" | "expense";
   categoryMain: string;
   categorySub: string;
+  detailTransactions?: PublicTransaction[];
 }
 
 type PublicTransaction = Omit<NormalizedTransaction, "duplicateKey">;
@@ -107,12 +118,43 @@ async function fetchTransactions(
   return items;
 }
 
+function finiteAmount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function rawAmount(raw: RawTransaction): number {
-  return raw.amount?.chargedAmount?.amount ?? raw.amount?.originalAmount?.amount ?? 0;
+  const charged = finiteAmount(raw.amount?.chargedAmount?.amount);
+  if (charged !== undefined) return charged;
+
+  const original = finiteAmount(raw.amount?.originalAmount?.amount);
+  const installmentTotal = raw.installments?.total;
+  if (original !== undefined && installmentTotal && installmentTotal > 1) {
+    return original / installmentTotal;
+  }
+  return original ?? 0;
+}
+
+function rawOriginalAmount(raw: RawTransaction): number | undefined {
+  return finiteAmount(raw.amount?.originalAmount?.amount);
 }
 
 function normalizeDate(value: string): string {
   return value.slice(0, 10);
+}
+
+function cardLast4(raw: RawTransaction, source: "bank" | "card"): string | undefined {
+  if (source === "card") {
+    const digits = raw.accountNumber?.replace(/\D/g, "") ?? "";
+    return digits.length >= 4 ? digits.slice(-4) : undefined;
+  }
+
+  const isBankCardDebit =
+    raw.category?.main === "INCOMES_EXPENSES" && raw.category?.sub === "CREDIT_CARD_CHECKING";
+  if (!isBankCardDebit) return undefined;
+
+  const info = raw.description?.additionalInfo ?? "";
+  const idMatch = info.match(/מזהה\s*(\d{4,})/);
+  return idMatch ? idMatch[1].slice(-4) : undefined;
 }
 
 function isCardInstallment(raw: RawTransaction): boolean {
@@ -136,23 +178,150 @@ function dedupeTransactions(transactions: NormalizedTransaction[]): PublicTransa
 function normalize(raw: RawTransaction, index: number, source: "bank" | "card"): NormalizedTransaction {
   const rawDate =
     source === "card"
-      ? isCardInstallment(raw)
-        ? raw.date?.valueDate ?? raw.date?.transactionDate ?? raw.date?.bookingDate ?? ""
-        : raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? ""
+      ? raw.date?.transactionDate ?? raw.date?.bookingDate ?? raw.date?.valueDate ?? ""
       : raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? "";
+  const billingDate = source === "card" && raw.date?.valueDate ? normalizeDate(raw.date.valueDate) : undefined;
   const amount = rawAmount(raw);
+  const originalAmount = rawOriginalAmount(raw);
+  const last4 = cardLast4(raw, source);
+  const installment = isCardInstallment(raw)
+    ? { number: raw.installments?.number, total: raw.installments?.total }
+    : undefined;
 
   return {
     id: raw.id ? `${source}:${raw.id}` : `${source}-tx-${index}`,
     duplicateKey: raw.id ? `${source}:${raw.id}` : undefined,
     source,
     date: normalizeDate(rawDate),
+    ...(billingDate ? { billingDate } : {}),
+    ...(last4 ? { cardLast4: last4 } : {}),
+    ...(raw.providerId ? { cardProvider: raw.providerId } : {}),
     merchant: raw.merchantName || raw.description?.description || "לא ידוע",
     amount: Math.abs(amount),
+    ...(originalAmount !== undefined && Math.abs(originalAmount) !== Math.abs(amount)
+      ? { originalAmount: Math.abs(originalAmount) }
+      : {}),
+    ...(installment ? { installment } : {}),
     type: amount > 0 ? "income" : "expense",
     categoryMain: raw.category?.main ?? "OTHER",
     categorySub: raw.category?.sub ?? "UNCATEGORIZED",
   };
+}
+
+function isCardDebit(tx: NormalizedTransaction): boolean {
+  return tx.source === "bank" && tx.categoryMain === "INCOMES_EXPENSES" && tx.categorySub === "CREDIT_CARD_CHECKING";
+}
+
+function amountCents(value: number): number {
+  return Math.round(value * 100);
+}
+
+function assignDebitDetailsForDate(
+  debits: NormalizedTransaction[],
+  groups: Array<{ totalCents: number; details: PublicTransaction[] }>
+): Map<string, PublicTransaction[]> {
+  const assignments = new Map<string, PublicTransaction[]>();
+  const usedGroupIndexes = new Set<number>();
+
+  for (const tx of debits) {
+    if (!tx.cardLast4) continue;
+    const groupIndex = groups.findIndex(
+      (group, index) => !usedGroupIndexes.has(index) && group.details.some((detail) => detail.cardLast4 === tx.cardLast4)
+    );
+    if (groupIndex >= 0) {
+      usedGroupIndexes.add(groupIndex);
+      assignments.set(tx.id, groups[groupIndex].details);
+    }
+  }
+
+  for (const tx of debits) {
+    if (assignments.has(tx.id)) continue;
+    const txAmountCents = amountCents(tx.amount);
+    const groupIndex = groups.findIndex(
+      (group, index) =>
+        !usedGroupIndexes.has(index) &&
+        group.totalCents === txAmountCents &&
+        (!tx.cardLast4 || group.details.some((detail) => detail.cardLast4 === tx.cardLast4))
+    );
+    if (groupIndex >= 0) {
+      usedGroupIndexes.add(groupIndex);
+      assignments.set(tx.id, groups[groupIndex].details);
+    }
+  }
+
+  const unmatchedDebits = debits.filter((tx) => !assignments.has(tx.id));
+  const unusedGroups = groups
+    .map((group, index) => ({ ...group, index }))
+    .filter((group) => !usedGroupIndexes.has(group.index));
+
+  if (unmatchedDebits.length === 1 && unusedGroups.length > 1) {
+    const totalCents = unusedGroups.reduce((total, group) => total + group.totalCents, 0);
+    if (Math.abs(totalCents - amountCents(unmatchedDebits[0].amount)) <= 1) {
+      assignments.set(unmatchedDebits[0].id, unusedGroups.flatMap((group) => group.details));
+      return assignments;
+    }
+  }
+
+  if (unmatchedDebits.length === unusedGroups.length) {
+    for (const tx of unmatchedDebits) {
+      const txAmountCents = amountCents(tx.amount);
+      const best = unusedGroups
+        .filter((group) => !usedGroupIndexes.has(group.index))
+        .map((group) => ({ ...group, delta: Math.abs(group.totalCents - txAmountCents) }))
+        .sort((a, b) => a.delta - b.delta)[0];
+      if (best && best.delta <= 1) {
+        usedGroupIndexes.add(best.index);
+        assignments.set(tx.id, best.details);
+      }
+    }
+  }
+
+  return assignments;
+}
+
+function attachCardDebitDetails(transactions: NormalizedTransaction[]): NormalizedTransaction[] {
+  const cardGroupsByBillingDate = new Map<string, Array<{ totalCents: number; details: PublicTransaction[] }>>();
+  const debitDetailsById = new Map<string, PublicTransaction[]>();
+
+  for (const tx of transactions) {
+    if (tx.source !== "card" || !tx.billingDate) continue;
+    const { duplicateKey: _duplicateKey, ...publicTx } = tx;
+    const groups = cardGroupsByBillingDate.get(tx.billingDate) ?? [];
+    const key = `${tx.cardProvider ?? ""}:${tx.cardLast4 ?? ""}`;
+    const existing = groups.find((group) => group.details[0] && `${group.details[0].cardProvider ?? ""}:${group.details[0].cardLast4 ?? ""}` === key);
+    if (existing) {
+      existing.totalCents += amountCents(tx.amount);
+      existing.details.push(publicTx);
+    } else {
+      groups.push({ totalCents: amountCents(tx.amount), details: [publicTx] });
+    }
+    cardGroupsByBillingDate.set(tx.billingDate, groups);
+  }
+
+  const debitsByDate = new Map<string, NormalizedTransaction[]>();
+  for (const tx of transactions) {
+    if (!isCardDebit(tx)) continue;
+    const debits = debitsByDate.get(tx.date) ?? [];
+    debits.push(tx);
+    debitsByDate.set(tx.date, debits);
+  }
+
+  for (const [date, debits] of debitsByDate) {
+    const assignments = assignDebitDetailsForDate(debits, cardGroupsByBillingDate.get(date) ?? []);
+    for (const [id, details] of assignments) {
+      debitDetailsById.set(id, details);
+    }
+  }
+
+  return transactions.map((tx) => {
+    if (!isCardDebit(tx)) return tx;
+    const details = debitDetailsById.get(tx.id);
+    if (!details?.length) return tx;
+    return {
+      ...tx,
+      detailTransactions: [...details].sort((a, b) => b.date.localeCompare(a.date)),
+    };
+  });
 }
 
 function pickBalance(balances: RawBalance[] = []): RawBalance | undefined {
@@ -169,10 +338,10 @@ export async function getTransactions(settings: ServiceSettings, from: string, t
     fetchTransactions(settings, from, to, "BANK"),
     fetchTransactions(settings, from, to, "CARD"),
   ]);
-  const normalized = [
+  const normalized = attachCardDebitDetails([
     ...bank.map((raw, i) => normalize(raw, i, "bank")),
     ...card.map((raw, i) => normalize(raw, i, "card")),
-  ].filter((tx) => tx.date && tx.date >= from && tx.date <= to && tx.amount > 0);
+  ]).filter((tx) => tx.date && tx.date >= from && tx.date <= to && tx.amount > 0);
   return dedupeTransactions(normalized);
 }
 

@@ -133,6 +133,7 @@ function BudgetApp() {
   const [serviceSettingsRequired, setServiceSettingsRequired] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const preferencesSaveSeq = useRef(0);
   const [view, setView] = useState<"monthly" | "trends">("monthly");
   const [theme, setTheme] = useState<ThemeMode>(readInitialTheme);
 
@@ -233,14 +234,18 @@ function BudgetApp() {
   }, [pinGate, user]);
 
   const updatePreferences = useCallback((next: BudgetPreferences) => {
+    const saveSeq = preferencesSaveSeq.current + 1;
+    preferencesSaveSeq.current = saveSeq;
     setPreferences(next);
     setSaveState("saving");
     savePreferences(next)
       .then((saved) => {
+        if (preferencesSaveSeq.current !== saveSeq) return;
         setPreferences(saved);
         setSaveState("saved");
       })
       .catch((err: unknown) => {
+        if (preferencesSaveSeq.current !== saveSeq) return;
         setSaveState("error");
         setError(err instanceof Error ? err.message : String(err));
       });

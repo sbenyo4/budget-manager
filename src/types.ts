@@ -7,6 +7,21 @@ export interface Transaction {
   merchant: string;
   /** Amount in ILS, always positive; direction is in `type` */
   amount: number;
+  /** Credit-card billing/debit date, when different from the purchase date. */
+  billingDate?: string;
+  /** Last 4 digits of the credit card/account number, when the provider exposes it. */
+  cardLast4?: string;
+  /** Card provider, e.g. isracard, when available. */
+  cardProvider?: string;
+  /** Original full purchase amount for installment transactions. */
+  originalAmount?: number;
+  /** Installment position, if this card transaction is paid in installments. */
+  installment?: {
+    number?: number;
+    total?: number;
+  };
+  /** Card transactions represented by an aggregate bank credit-card debit. */
+  detailTransactions?: Transaction[];
   /** Money in or out. Optional for demo data — undefined means expense. */
   type?: "income" | "expense";
   /** Where the transaction lives: the bank account (= account state, incl.

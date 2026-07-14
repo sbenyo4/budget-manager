@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { isCardDebit, isConsumption } from "../logic/flows";
@@ -36,29 +37,218 @@ function sliceByMain(txs: Transaction[]): DonutSlice[] {
 }
 
 const sum = (txs: Transaction[]) => txs.reduce((s, t) => s + t.amount, 0);
+const amountCents = (value: number) => Math.round(value * 100);
+const MIN_SEARCH_CHARS = 2;
 
 function normalizeSearchText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-function txMatchesSearch(tx: Transaction, query: string): boolean {
-  if (!query) return true;
+function activeSearchQuery(value: string): string {
+  const normalized = normalizeSearchText(value);
+  return normalized.length >= MIN_SEARCH_CHARS ? normalized : "";
+}
+
+function visibleSearchTerm(value: string): string {
+  const term = value.trim();
+  return term.length >= MIN_SEARCH_CHARS ? term : "";
+}
+
+function subscriptionSearchAliases(value: string): string[] {
+  const normalized = normalizeSearchText(value);
+  return normalized.includes("מנוי") || normalized.includes("מינוי") ? ["מנוי", "מנויים", "מינוי", "מינויים"] : [];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function highlightSearchText(value: string | number, query: string): ReactNode {
+  const text = String(value);
+  const term = query.trim();
+  if (!term) return text;
+
+  const regex = new RegExp(`(${escapeRegExp(term)})`, "gi");
+  const parts = text.split(regex);
+  if (parts.length === 1) {
+    const textAliases = subscriptionSearchAliases(text);
+    const termAliases = subscriptionSearchAliases(term);
+    const hasAliasMatch = textAliases.length > 0 && termAliases.some((alias) => textAliases.includes(alias));
+    return hasAliasMatch ? <mark className="search-hit">{text}</mark> : text;
+  }
+
+  const normalizedTerm = term.toLowerCase();
+  return parts.map((part, index) =>
+    part.toLowerCase() === normalizedTerm ? (
+      <mark key={`${part}-${index}`} className="search-hit">
+        {part}
+      </mark>
+    ) : (
+      <Fragment key={`${part}-${index}`}>{part}</Fragment>
+    )
+  );
+}
+
+function searchValuesFor(tx: Transaction, categoryMain = tx.categoryMain): string[] {
   const date = new Date(`${tx.date}T00:00:00`).toLocaleDateString("he-IL", {
     day: "numeric",
     month: "numeric",
     year: "2-digit",
   });
-  const values = [
+  const mainLabel = categoryLabel(categoryMain);
+  const subLabel = displaySubLabel(tx.categorySub);
+  return [
     tx.date,
     date,
     tx.merchant,
-    categoryLabel(tx.categoryMain),
-    displaySubLabel(tx.categorySub),
+    mainLabel,
+    subLabel,
+    ...subscriptionSearchAliases(mainLabel),
+    ...subscriptionSearchAliases(subLabel),
     tx.source === "card" ? "אשראי" : "בנק",
     tx.type === "income" ? "הכנסה" : "הוצאה",
     String(tx.amount),
   ];
+}
+
+function detailSearchValuesFor(tx: Transaction, categoryMain = tx.categoryMain, includeCategory = false): string[] {
+  const date = new Date(`${tx.date}T00:00:00`).toLocaleDateString("he-IL", {
+    day: "numeric",
+    month: "numeric",
+    year: "2-digit",
+  });
+  const mainLabel = categoryLabel(categoryMain);
+  const subLabel = displaySubLabel(tx.categorySub);
+  return [
+    tx.date,
+    date,
+    tx.merchant,
+    ...(includeCategory
+      ? [
+          mainLabel,
+          subLabel,
+          ...subscriptionSearchAliases(mainLabel),
+          ...subscriptionSearchAliases(subLabel),
+        ]
+      : []),
+    tx.cardLast4 ? `כרטיס ${tx.cardLast4}` : "",
+    String(tx.amount),
+    formatILS(tx.amount),
+  ];
+}
+
+function valuesMatchSearch(values: string[], query: string): boolean {
   return normalizeSearchText(values.join(" ")).includes(query);
+}
+
+function txSelfMatchesSearch(tx: Transaction, query: string, categoryMain = tx.categoryMain): boolean {
+  if (!query) return true;
+  return valuesMatchSearch(searchValuesFor(tx, categoryMain), query);
+}
+
+function shouldSearchDetailCategory(query: string): boolean {
+  return query.length >= 4 || subscriptionSearchAliases(query).length > 0;
+}
+
+function detailSelfMatchesSearch(tx: Transaction, query: string, categoryMain = tx.categoryMain): boolean {
+  if (!query) return true;
+  return valuesMatchSearch(detailSearchValuesFor(tx, categoryMain, shouldSearchDetailCategory(query)), query);
+}
+
+function detailMatchesSearch(
+  details: Transaction[],
+  query: string,
+  categoryFor: (tx: Transaction) => string = (tx) => tx.categoryMain
+): boolean {
+  return Boolean(query) && details.some((detail) => detailSelfMatchesSearch(detail, query, categoryFor(detail)));
+}
+
+function txMatchesCategory(tx: Transaction, category: string | null): boolean {
+  if (!category) return true;
+  return tx.categoryMain === category || Boolean(tx.detailTransactions?.some((detail) => detail.categoryMain === category));
+}
+
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && Boolean(target.closest("button, select, input, textarea, a, [role='button']"));
+}
+
+function installmentText(tx: Transaction): string | null {
+  if (!tx.installment?.total || tx.installment.total <= 1) return null;
+  const number = tx.installment.number ? `${tx.installment.number}/` : "";
+  const original = tx.originalAmount ? ` · מקור: ${formatILS(tx.originalAmount)}` : "";
+  return `תשלום ${number}${tx.installment.total}${original}`;
+}
+
+function cardDigitsText(tx: Transaction): string | null {
+  return tx.cardLast4 ? `כרטיס ${tx.cardLast4}` : null;
+}
+
+function cardDigitsSummary(tx: Transaction, details: Transaction[]): string | null {
+  if (tx.cardLast4) return cardDigitsText(tx);
+  const last4s = [...new Set(details.map((detail) => detail.cardLast4).filter(Boolean))];
+  if (last4s.length === 0) return null;
+  if (last4s.length === 1) return `כרטיס ${last4s[0]}`;
+  return `כרטיסים ${last4s.join(", ")}`;
+}
+
+function fallbackCardDebitDetails(transactions: Transaction[]): Map<string, Transaction[]> {
+  const cardGroupsByBillingDate = new Map<string, Array<{ totalCents: number; details: Transaction[] }>>();
+  const debitsByDate = new Map<string, Transaction[]>();
+  const assignments = new Map<string, Transaction[]>();
+
+  for (const tx of transactions) {
+    if (isCardDebit(tx)) {
+      const debits = debitsByDate.get(tx.date) ?? [];
+      debits.push(tx);
+      debitsByDate.set(tx.date, debits);
+    }
+
+    if (tx.source !== "card" || !tx.billingDate) continue;
+    const groups = cardGroupsByBillingDate.get(tx.billingDate) ?? [];
+    const key = `${tx.cardProvider ?? ""}:${tx.cardLast4 ?? ""}`;
+    const group = groups.find(
+      (candidate) => `${candidate.details[0]?.cardProvider ?? ""}:${candidate.details[0]?.cardLast4 ?? ""}` === key
+    );
+    if (group) {
+      group.totalCents += amountCents(tx.amount);
+      group.details.push(tx);
+    } else {
+      groups.push({ totalCents: amountCents(tx.amount), details: [tx] });
+    }
+    cardGroupsByBillingDate.set(tx.billingDate, groups);
+  }
+
+  for (const [date, debits] of debitsByDate) {
+    const groups = cardGroupsByBillingDate.get(date) ?? [];
+    const used = new Set<number>();
+
+    for (const tx of debits) {
+      if (!tx.cardLast4) continue;
+      const groupIndex = groups.findIndex(
+        (group, index) => !used.has(index) && group.details.some((detail) => detail.cardLast4 === tx.cardLast4)
+      );
+      if (groupIndex >= 0) {
+        used.add(groupIndex);
+        assignments.set(tx.id, [...groups[groupIndex].details].sort((a, b) => b.date.localeCompare(a.date)));
+      }
+    }
+
+    for (const tx of debits) {
+      if (assignments.has(tx.id)) continue;
+      const groupIndex = groups.findIndex(
+        (group, index) =>
+          !used.has(index) &&
+          Math.abs(group.totalCents - amountCents(tx.amount)) <= 1 &&
+          (!tx.cardLast4 || group.details.some((detail) => detail.cardLast4 === tx.cardLast4))
+      );
+      if (groupIndex >= 0) {
+        used.add(groupIndex);
+        assignments.set(tx.id, [...groups[groupIndex].details].sort((a, b) => b.date.localeCompare(a.date)));
+      }
+    }
+  }
+
+  return assignments;
 }
 
 export function MonthlyView({
@@ -71,10 +261,12 @@ export function MonthlyView({
   const [periodKey, setPeriodKey] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [expandedDebitId, setExpandedDebitId] = useState<string | null>(null);
   const sectionOverrides = preferences.sectionOverrides;
   const oneTimeExpenses = useMemo(() => new Set(preferences.oneTimeExpenses), [preferences.oneTimeExpenses]);
   const highAmountThreshold = preferences.highAmountThreshold;
   const categorizedTransactions = transactions;
+  const fallbackDebitDetails = useMemo(() => fallbackCardDebitDetails(categorizedTransactions), [categorizedTransactions]);
 
   const period = useMemo(() => {
     if (periodKey) return periods.find((p) => p.key === periodKey) ?? periods[0];
@@ -101,7 +293,7 @@ export function MonthlyView({
   const bankTxs = useMemo(() => inPeriod.filter((tx) => tx.source !== "card"), [inPeriod]);
   const cardTxs = useMemo(() => inPeriod.filter((tx) => tx.source === "card"), [inPeriod]);
 
-  const isPending = (tx: Transaction) => tx.source === "card" && tx.date > lastDebitDate;
+  const isPending = (tx: Transaction) => tx.source === "card" && (tx.billingDate ?? tx.date) > lastDebitDate;
 
   // Account state: what actually moved through the bank account
   const bankIncome = useMemo(() => sum(bankTxs.filter((t) => t.type === "income")), [bankTxs]);
@@ -180,24 +372,35 @@ export function MonthlyView({
     };
   }, [allExpenseTotal, categoryFilter, expenseSummaryByCategory, incomeSummaryByCategory]);
 
-  const sortedInPeriod = useMemo(() => [...inPeriod].sort((a, b) => b.date.localeCompare(a.date)), [inPeriod]);
-  const listedByCategory = useMemo(() => {
-    const byCategory = new Map<string, Transaction[]>();
-    for (const tx of sortedInPeriod) {
-      const group = byCategory.get(tx.categoryMain);
-      if (group) group.push(tx);
-      else byCategory.set(tx.categoryMain, [tx]);
-    }
-    return byCategory;
-  }, [sortedInPeriod]);
+  const sortedAccountMovements = useMemo(() => [...bankTxs].sort((a, b) => b.date.localeCompare(a.date)), [bankTxs]);
   const categoryListed = useMemo(
-    () => (categoryFilter ? listedByCategory.get(categoryFilter) ?? [] : sortedInPeriod),
-    [categoryFilter, listedByCategory, sortedInPeriod]
+    () => sortedAccountMovements.filter((tx) => txMatchesCategory(tx, categoryFilter)),
+    [categoryFilter, sortedAccountMovements]
   );
-  const normalizedSearchQuery = useMemo(() => normalizeSearchText(searchQuery), [searchQuery]);
+  const normalizedSearchQuery = useMemo(() => activeSearchQuery(searchQuery), [searchQuery]);
+  const visibleSearchQuery = visibleSearchTerm(searchQuery);
+  const hasActiveSearch = Boolean(normalizedSearchQuery);
+  const effectiveCategoryMain = useCallback(
+    (tx: Transaction) => sectionOverrides[overrideKey(tx.categoryMain, merchantKey(tx))] ?? tx.categoryMain,
+    [sectionOverrides]
+  );
+  const txMatchesVisibleSearch = useCallback(
+    (tx: Transaction) => {
+      if (!normalizedSearchQuery) return true;
+      return (
+        txSelfMatchesSearch(tx, normalizedSearchQuery, effectiveCategoryMain(tx)) ||
+        Boolean(
+          tx.detailTransactions?.some((detail) =>
+            detailSelfMatchesSearch(detail, normalizedSearchQuery, effectiveCategoryMain(detail))
+          )
+        )
+      );
+    },
+    [effectiveCategoryMain, normalizedSearchQuery]
+  );
   const listed = useMemo(
-    () => categoryListed.filter((tx) => txMatchesSearch(tx, normalizedSearchQuery)),
-    [categoryListed, normalizedSearchQuery]
+    () => categoryListed.filter(txMatchesVisibleSearch),
+    [categoryListed, txMatchesVisibleSearch]
   );
 
   const categorizeMerchant = useCallback((tx: Transaction, category: string) => {
@@ -245,6 +448,7 @@ export function MonthlyView({
             setPeriodKey(e.target.value);
             setCategoryFilter(null);
             setSearchQuery("");
+            setExpandedDebitId(null);
           }}
         >
           {periods.map((p) => (
@@ -376,11 +580,11 @@ export function MonthlyView({
       <section className="period-detail">
         <div className="detail-header">
           <h2>
-            פירוט תנועות
+            תנועות חשבון בפועל
             {categoryFilter && <span className="filter-tag"> · {categoryLabel(categoryFilter)}</span>}
-            {searchQuery.trim() && <span className="filter-tag"> · "{searchQuery.trim()}"</span>}
+            {hasActiveSearch && <span className="filter-tag"> · "{visibleSearchQuery}"</span>}
           </h2>
-          {(categoryFilter || searchQuery.trim()) && (
+          {(categoryFilter || hasActiveSearch) && (
             <button
               className="table-toggle"
               onClick={() => {
@@ -405,55 +609,167 @@ export function MonthlyView({
             </thead>
             <tbody>
               {listed.map((tx) => {
-                const categorySubLabel = displaySubLabel(tx.categorySub);
+                const debitDetails = tx.detailTransactions?.length ? tx.detailTransactions : fallbackDebitDetails.get(tx.id) ?? [];
+                const singleDebitDetail = isCardDebit(tx) && debitDetails.length === 1 ? debitDetails[0] : null;
+                const displayTx = singleDebitDetail ?? tx;
+                const displayCategoryMain = effectiveCategoryMain(displayTx);
+                const categoryMainLabel = categoryLabel(displayCategoryMain);
+                const categorySubLabel = displaySubLabel(displayTx.categorySub);
+                const displayDate = new Date(`${tx.date}T00:00:00`).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+                const canExpandDebit = isCardDebit(tx) && debitDetails.length > 1;
+                const isExpandedBySearch = canExpandDebit && detailMatchesSearch(debitDetails, normalizedSearchQuery, effectiveCategoryMain);
+                const isExpanded = expandedDebitId === tx.id || isExpandedBySearch;
+                const toggleDebitDetails = () => setExpandedDebitId(isExpanded ? null : tx.id);
+                const cardSummary =
+                  isCardDebit(tx) || displayTx.source === "card" ? cardDigitsSummary(displayTx, debitDetails) : null;
+                const sourceLabel = cardSummary ?? (tx.source === "card" ? "אשראי" : "בנק");
+                const sourceClass = cardSummary ? "card-digits" : tx.source === "card" ? "card" : "bank";
                 return (
+                <Fragment key={tx.id}>
                 <tr
-                  key={tx.id}
-                  className={`${isCardDebit(tx) ? "aggregate-row" : ""} ${transactionHighlightClass(tx, highAmountThreshold)}`.trim()}
+                  className={`${isCardDebit(tx) ? "aggregate-row" : ""} ${canExpandDebit ? "expandable-row" : ""} ${transactionHighlightClass(tx, highAmountThreshold)}`.trim()}
+                  onClick={
+                    canExpandDebit
+                      ? (event) => {
+                          if (!isInteractiveTarget(event.target)) toggleDebitDetails();
+                        }
+                      : undefined
+                  }
+                  tabIndex={canExpandDebit ? 0 : undefined}
+                  onKeyDown={
+                    canExpandDebit
+                      ? (event) => {
+                          if (isInteractiveTarget(event.target)) return;
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleDebitDetails();
+                          }
+                        }
+                      : undefined
+                  }
                 >
-                  <td>{new Date(`${tx.date}T00:00:00`).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" })}</td>
+                  <td>{highlightSearchText(displayDate, visibleSearchQuery)}</td>
                   <td>
-                    {tx.merchant}
-                    {tx.recurring && <span className="recurring-tag"> · מנוי / קבוע</span>}
-                    {isCardDebit(tx) && <span className="sub-label"> (מפורט בשורות האשראי)</span>}
+                    {canExpandDebit && (
+                      <button
+                        type="button"
+                        className="row-expander"
+                        aria-label={isExpanded ? "סגירת פירוט חיוב אשראי" : "פתיחת פירוט חיוב אשראי"}
+                        aria-expanded={isExpanded}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleDebitDetails();
+                        }}
+                      >
+                        {isExpanded ? "▾" : "▸"}
+                      </button>
+                    )}
+                    {highlightSearchText(displayTx.merchant, visibleSearchQuery)}
+                    {singleDebitDetail && <span className="sub-label"> · עסקת אשראי יחידה</span>}
+                    {canExpandDebit && <span className="sub-label"> · {debitDetails.length} עסקאות בכרטיס</span>}
+                    {installmentText(displayTx) && <span className="sub-label"> · {installmentText(displayTx)}</span>}
+                    {displayTx.recurring && <span className="recurring-tag"> · מנוי / קבוע</span>}
+                    {isCardDebit(tx) && !singleDebitDetail && <span className="sub-label"> (מפורט בשורות האשראי)</span>}
                   </td>
                   <td>
                     <span className="cat-cell">
                       <span className="cat-current">
-                        <span className="swatch" style={{ background: mainColor(tx.categoryMain) }} aria-hidden />
-                        <span className="cat-main-label">{categoryLabel(tx.categoryMain)}</span>
-                        {categorySubLabel && <span className="sub-label">{categorySubLabel}</span>}
+                        <span className="swatch" style={{ background: mainColor(displayCategoryMain) }} aria-hidden />
+                        <span className="cat-main-label">{highlightSearchText(categoryMainLabel, visibleSearchQuery)}</span>
+                        {categorySubLabel && <span className="sub-label">{highlightSearchText(categorySubLabel, visibleSearchQuery)}</span>}
                       </span>
-                      {tx.type !== "income" && isConsumption(tx) && (
+                      {displayTx.type !== "income" && isConsumption(displayTx) && (
                         <button
                           type="button"
-                          className={`legend-state-action ${oneTimeExpenses.has(oneTimeKey(tx)) ? "active" : ""}`}
-                          onClick={() => toggleOneTime(tx)}
-                          aria-pressed={oneTimeExpenses.has(oneTimeKey(tx))}
+                          className={`legend-state-action ${oneTimeExpenses.has(oneTimeKey(displayTx)) ? "active" : ""}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleOneTime(displayTx);
+                          }}
+                          aria-pressed={oneTimeExpenses.has(oneTimeKey(displayTx))}
                           title="סימון העסקה כחד פעמית"
                         >
                           חד פעמי
                         </button>
                       )}
-                      {!isCardDebit(tx) && (
+                      {(!isCardDebit(tx) || singleDebitDetail) && (
                         <MonthlyCategoryPicker
-                          value={sectionOverrides[overrideKey(tx.categoryMain, merchantKey(tx))] ?? tx.categoryMain}
+                          value={sectionOverrides[overrideKey(displayTx.categoryMain, merchantKey(displayTx))] ?? displayTx.categoryMain}
                           options={categoryEditorOptions}
-                          onChange={(nextCategory) => categorizeMerchant(tx, nextCategory)}
+                          onChange={(nextCategory) => categorizeMerchant(displayTx, nextCategory)}
                         />
                       )}
                     </span>
                   </td>
-                  <td>
-                    <span className={`source-chip ${tx.source === "card" ? "card" : "bank"}`}>
-                      {tx.source === "card" ? "אשראי" : "בנק"}
-                    </span>
+                  <td className="source-cell">
+                    <span className={`source-chip ${sourceClass}`}>{highlightSearchText(sourceLabel, visibleSearchQuery)}</span>
                     {isPending(tx) && <span className="pending-chip">⏳ טרם חויב</span>}
                   </td>
                   <td className={`num ${tx.type === "income" ? "net-positive" : ""}`}>
-                    {tx.type === "income" ? "+" : "−"}{formatILS(tx.amount)}
+                    {tx.type === "income" ? "+" : "−"}{highlightSearchText(formatILS(tx.amount), visibleSearchQuery)}
                   </td>
                 </tr>
+                {canExpandDebit && isExpanded && (
+                  <tr className="debit-detail-row">
+                    <td colSpan={5}>
+                      <ul className="debit-detail-list" aria-label="פירוט עסקאות חיוב אשראי">
+                        {debitDetails.map((detail) => {
+                          const detailInstallment = installmentText(detail);
+                          const detailDate = new Date(`${detail.date}T00:00:00`).toLocaleDateString("he-IL", {
+                            day: "numeric",
+                            month: "numeric",
+                          });
+                          const detailCategoryMain = effectiveCategoryMain(detail);
+                          const detailCategoryMainLabel = categoryLabel(detailCategoryMain);
+                          const detailCard = cardDigitsText(detail);
+                          const detailSubLabel = displaySubLabel(detail.categorySub);
+                          const detailAmount = formatILS(detail.amount);
+                          return (
+                            <li key={detail.id} className="debit-detail-item">
+                              <span className="debit-detail-date">
+                                {highlightSearchText(detailDate, visibleSearchQuery)}
+                                {detailCard && (
+                                  <span className="debit-detail-card">{highlightSearchText(detailCard, visibleSearchQuery)}</span>
+                                )}
+                              </span>
+                              <span className="debit-detail-merchant">{highlightSearchText(detail.merchant, visibleSearchQuery)}</span>
+                              <span className="debit-detail-category">
+                                <span className="cat-main-label">{highlightSearchText(detailCategoryMainLabel, visibleSearchQuery)}</span>
+                                {detailSubLabel && <span className="sub-label">{highlightSearchText(detailSubLabel, visibleSearchQuery)}</span>}
+                                {detailInstallment && (
+                                  <span className="sub-label"> · {highlightSearchText(detailInstallment, visibleSearchQuery)}</span>
+                                )}
+                              </span>
+                              <span className="debit-detail-actions">
+                                {detail.type !== "income" && isConsumption(detail) && (
+                                  <button
+                                    type="button"
+                                    className={`legend-state-action ${oneTimeExpenses.has(oneTimeKey(detail)) ? "active" : ""}`}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      toggleOneTime(detail);
+                                    }}
+                                    aria-pressed={oneTimeExpenses.has(oneTimeKey(detail))}
+                                    title="סימון העסקה כחד פעמית"
+                                  >
+                                    חד פעמי
+                                  </button>
+                                )}
+                                <MonthlyCategoryPicker
+                                  value={sectionOverrides[overrideKey(detail.categoryMain, merchantKey(detail))] ?? detail.categoryMain}
+                                  options={categoryEditorOptions}
+                                  onChange={(nextCategory) => categorizeMerchant(detail, nextCategory)}
+                                />
+                              </span>
+                              <span className="debit-detail-amount">{highlightSearchText(detailAmount, visibleSearchQuery)}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
                 );
               })}
               {listed.length === 0 && (
@@ -483,7 +799,12 @@ function MonthlyCategoryPicker({
   const isKnown = !value || options.some((option) => option.value === value);
 
   return (
-    <span className="monthly-category-picker">
+    <span
+      className="monthly-category-picker"
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
       <select
         value={isCreating || !isKnown ? "__new" : value}
         onChange={(event) => {
