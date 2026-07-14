@@ -1567,6 +1567,61 @@ h1 {
   min-width: 0;
 }
 
+.cat-current.compact {
+  gap: 5px;
+}
+
+.category-filter-action {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  padding: 2px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.category-filter-action:hover,
+.category-filter-action.active {
+  background: var(--control-wash);
+}
+
+.category-filter-action .cat-main-label {
+  text-align: start;
+}
+
+.category-power {
+  width: 26px;
+  height: 26px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.78rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.category-power:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.category-power.excluded {
+  color: var(--text-muted);
+  background: var(--control-wash);
+  opacity: 0.62;
+}
+
 .cat-main-label {
   overflow-wrap: anywhere;
 }

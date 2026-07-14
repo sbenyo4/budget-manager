@@ -26,10 +26,11 @@ interface Props {
   onPreferencesChange: (preferences: BudgetPreferences) => void;
 }
 
-function sliceByMain(txs: Transaction[]): DonutSlice[] {
+function sliceByMain(txs: Transaction[], categoryFor: (tx: Transaction) => string = (tx) => tx.categoryMain): DonutSlice[] {
   const totals = new Map<string, number>();
   for (const tx of txs) {
-    totals.set(tx.categoryMain, (totals.get(tx.categoryMain) ?? 0) + tx.amount);
+    const category = categoryFor(tx);
+    totals.set(category, (totals.get(category) ?? 0) + tx.amount);
   }
   return [...totals.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -163,11 +164,6 @@ function detailMatchesSearch(
   return Boolean(query) && details.some((detail) => detailSelfMatchesSearch(detail, query, categoryFor(detail)));
 }
 
-function txMatchesCategory(tx: Transaction, category: string | null): boolean {
-  if (!category) return true;
-  return tx.categoryMain === category || Boolean(tx.detailTransactions?.some((detail) => detail.categoryMain === category));
-}
-
 function isInteractiveTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && Boolean(target.closest("button, select, input, textarea, a, [role='button']"));
 }
@@ -262,11 +258,16 @@ export function MonthlyView({
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedDebitId, setExpandedDebitId] = useState<string | null>(null);
+  const [excludedCategories, setExcludedCategories] = useState<Set<string>>(() => new Set());
   const sectionOverrides = preferences.sectionOverrides;
   const oneTimeExpenses = useMemo(() => new Set(preferences.oneTimeExpenses), [preferences.oneTimeExpenses]);
   const highAmountThreshold = preferences.highAmountThreshold;
   const categorizedTransactions = transactions;
   const fallbackDebitDetails = useMemo(() => fallbackCardDebitDetails(categorizedTransactions), [categorizedTransactions]);
+  const effectiveCategoryMain = useCallback(
+    (tx: Transaction) => sectionOverrides[overrideKey(tx.categoryMain, merchantKey(tx))] ?? tx.categoryMain,
+    [sectionOverrides]
+  );
 
   const period = useMemo(() => {
     if (periodKey) return periods.find((p) => p.key === periodKey) ?? periods[0];
@@ -326,38 +327,44 @@ export function MonthlyView({
     ],
     [bankTxs, cardTxs]
   );
+  const activeBreakdownExpenses = useMemo(
+    () => breakdownExpenses.filter((tx) => !excludedCategories.has(effectiveCategoryMain(tx))),
+    [breakdownExpenses, effectiveCategoryMain, excludedCategories]
+  );
   const breakdownIncomes = useMemo(() => inPeriod.filter((t) => t.type === "income"), [inPeriod]);
   const categoryOptions = useMemo(
-    () => [...new Set([...breakdownExpenses, ...breakdownIncomes].map((t) => t.categoryMain))],
-    [breakdownExpenses, breakdownIncomes]
+    () => [...new Set([...breakdownExpenses, ...breakdownIncomes].map(effectiveCategoryMain))],
+    [breakdownExpenses, breakdownIncomes, effectiveCategoryMain]
   );
   const categoryEditorOptions = useMemo(
     () => categoryChoices(categoryOptions, sectionOverrides),
     [categoryOptions, sectionOverrides]
   );
-  const expenseSlices = useMemo(() => sliceByMain(breakdownExpenses), [breakdownExpenses]);
-  const incomeSlices = useMemo(() => sliceByMain(breakdownIncomes), [breakdownIncomes]);
+  const expenseSlices = useMemo(() => sliceByMain(breakdownExpenses, effectiveCategoryMain), [breakdownExpenses, effectiveCategoryMain]);
+  const incomeSlices = useMemo(() => sliceByMain(breakdownIncomes, effectiveCategoryMain), [breakdownIncomes, effectiveCategoryMain]);
   const expenseSummaryByCategory = useMemo(() => {
     const summary = new Map<string, { count: number; total: number }>();
-    for (const tx of breakdownExpenses) {
-      const current = summary.get(tx.categoryMain) ?? { count: 0, total: 0 };
+    for (const tx of activeBreakdownExpenses) {
+      const category = effectiveCategoryMain(tx);
+      const current = summary.get(category) ?? { count: 0, total: 0 };
       current.count += 1;
       current.total += tx.amount;
-      summary.set(tx.categoryMain, current);
+      summary.set(category, current);
     }
     return summary;
-  }, [breakdownExpenses]);
+  }, [activeBreakdownExpenses, effectiveCategoryMain]);
   const incomeSummaryByCategory = useMemo(() => {
     const summary = new Map<string, { count: number; total: number }>();
     for (const tx of breakdownIncomes) {
-      const current = summary.get(tx.categoryMain) ?? { count: 0, total: 0 };
+      const category = effectiveCategoryMain(tx);
+      const current = summary.get(category) ?? { count: 0, total: 0 };
       current.count += 1;
       current.total += tx.amount;
-      summary.set(tx.categoryMain, current);
+      summary.set(category, current);
     }
     return summary;
-  }, [breakdownIncomes]);
-  const allExpenseTotal = useMemo(() => sum(breakdownExpenses), [breakdownExpenses]);
+  }, [breakdownIncomes, effectiveCategoryMain]);
+  const allExpenseTotal = useMemo(() => sum(activeBreakdownExpenses), [activeBreakdownExpenses]);
   const categorySummary = useMemo(() => {
     if (!categoryFilter) return null;
     const categoryExpenses = expenseSummaryByCategory.get(categoryFilter) ?? { count: 0, total: 0 };
@@ -374,16 +381,18 @@ export function MonthlyView({
 
   const sortedAccountMovements = useMemo(() => [...bankTxs].sort((a, b) => b.date.localeCompare(a.date)), [bankTxs]);
   const categoryListed = useMemo(
-    () => sortedAccountMovements.filter((tx) => txMatchesCategory(tx, categoryFilter)),
-    [categoryFilter, sortedAccountMovements]
+    () =>
+      sortedAccountMovements.filter(
+        (tx) =>
+          !categoryFilter ||
+          effectiveCategoryMain(tx) === categoryFilter ||
+          Boolean(tx.detailTransactions?.some((detail) => effectiveCategoryMain(detail) === categoryFilter))
+      ),
+    [categoryFilter, effectiveCategoryMain, sortedAccountMovements]
   );
   const normalizedSearchQuery = useMemo(() => activeSearchQuery(searchQuery), [searchQuery]);
   const visibleSearchQuery = visibleSearchTerm(searchQuery);
   const hasActiveSearch = Boolean(normalizedSearchQuery);
-  const effectiveCategoryMain = useCallback(
-    (tx: Transaction) => sectionOverrides[overrideKey(tx.categoryMain, merchantKey(tx))] ?? tx.categoryMain,
-    [sectionOverrides]
-  );
   const txMatchesVisibleSearch = useCallback(
     (tx: Transaction) => {
       if (!normalizedSearchQuery) return true;
@@ -398,6 +407,17 @@ export function MonthlyView({
     },
     [effectiveCategoryMain, normalizedSearchQuery]
   );
+  const toggleCategoryInCalculation = useCallback((key: string) => {
+    setExcludedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  const selectCategoryFilter = useCallback((key: string) => {
+    setCategoryFilter((current) => (current === key ? null : key));
+  }, []);
   const listed = useMemo(
     () => categoryListed.filter(txMatchesVisibleSearch),
     [categoryListed, txMatchesVisibleSearch]
@@ -566,6 +586,8 @@ export function MonthlyView({
           slices={expenseSlices}
           selectedKey={categoryFilter}
           onSelect={setCategoryFilter}
+          excludedKeys={excludedCategories}
+          onToggleKey={toggleCategoryInCalculation}
           highAmountThreshold={highAmountThreshold}
         />
         <Donut
@@ -615,6 +637,7 @@ export function MonthlyView({
                 const displayCategoryMain = effectiveCategoryMain(displayTx);
                 const categoryMainLabel = categoryLabel(displayCategoryMain);
                 const categorySubLabel = displaySubLabel(displayTx.categorySub);
+                const isCategoryExcluded = excludedCategories.has(displayCategoryMain);
                 const displayDate = new Date(`${tx.date}T00:00:00`).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
                 const canExpandDebit = isCardDebit(tx) && debitDetails.length > 1;
                 const isExpandedBySearch = canExpandDebit && detailMatchesSearch(debitDetails, normalizedSearchQuery, effectiveCategoryMain);
@@ -674,8 +697,30 @@ export function MonthlyView({
                   <td>
                     <span className="cat-cell">
                       <span className="cat-current">
-                        <span className="swatch" style={{ background: mainColor(displayCategoryMain) }} aria-hidden />
-                        <span className="cat-main-label">{highlightSearchText(categoryMainLabel, visibleSearchQuery)}</span>
+                        <button
+                          type="button"
+                          className={`category-power ${isCategoryExcluded ? "excluded" : ""}`}
+                          title={isCategoryExcluded ? `החזרת ${categoryMainLabel} לחישוב` : `הוצאת ${categoryMainLabel} מהחישוב`}
+                          aria-label={isCategoryExcluded ? `החזרת ${categoryMainLabel} לחישוב` : `הוצאת ${categoryMainLabel} מהחישוב`}
+                          aria-pressed={!isCategoryExcluded}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleCategoryInCalculation(displayCategoryMain);
+                          }}
+                        >
+                          ⏻
+                        </button>
+                        <button
+                          type="button"
+                          className={`category-filter-action ${categoryFilter === displayCategoryMain ? "active" : ""}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            selectCategoryFilter(displayCategoryMain);
+                          }}
+                        >
+                          <span className="swatch" style={{ background: mainColor(displayCategoryMain) }} aria-hidden />
+                          <span className="cat-main-label">{highlightSearchText(categoryMainLabel, visibleSearchQuery)}</span>
+                        </button>
                         {categorySubLabel && <span className="sub-label">{highlightSearchText(categorySubLabel, visibleSearchQuery)}</span>}
                       </span>
                       {displayTx.type !== "income" && isConsumption(displayTx) && (
@@ -721,6 +766,7 @@ export function MonthlyView({
                           });
                           const detailCategoryMain = effectiveCategoryMain(detail);
                           const detailCategoryMainLabel = categoryLabel(detailCategoryMain);
+                          const isDetailCategoryExcluded = excludedCategories.has(detailCategoryMain);
                           const detailCard = cardDigitsText(detail);
                           const detailSubLabel = displaySubLabel(detail.categorySub);
                           const detailAmount = formatILS(detail.amount);
@@ -734,7 +780,32 @@ export function MonthlyView({
                               </span>
                               <span className="debit-detail-merchant">{highlightSearchText(detail.merchant, visibleSearchQuery)}</span>
                               <span className="debit-detail-category">
-                                <span className="cat-main-label">{highlightSearchText(detailCategoryMainLabel, visibleSearchQuery)}</span>
+                                <span className="cat-current compact">
+                                  <button
+                                    type="button"
+                                    className={`category-power ${isDetailCategoryExcluded ? "excluded" : ""}`}
+                                    title={isDetailCategoryExcluded ? `החזרת ${detailCategoryMainLabel} לחישוב` : `הוצאת ${detailCategoryMainLabel} מהחישוב`}
+                                    aria-label={isDetailCategoryExcluded ? `החזרת ${detailCategoryMainLabel} לחישוב` : `הוצאת ${detailCategoryMainLabel} מהחישוב`}
+                                    aria-pressed={!isDetailCategoryExcluded}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      toggleCategoryInCalculation(detailCategoryMain);
+                                    }}
+                                  >
+                                    ⏻
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`category-filter-action ${categoryFilter === detailCategoryMain ? "active" : ""}`}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      selectCategoryFilter(detailCategoryMain);
+                                    }}
+                                  >
+                                    <span className="swatch" style={{ background: mainColor(detailCategoryMain) }} aria-hidden />
+                                    <span className="cat-main-label">{highlightSearchText(detailCategoryMainLabel, visibleSearchQuery)}</span>
+                                  </button>
+                                </span>
                                 {detailSubLabel && <span className="sub-label">{highlightSearchText(detailSubLabel, visibleSearchQuery)}</span>}
                                 {detailInstallment && (
                                   <span className="sub-label"> · {highlightSearchText(detailInstallment, visibleSearchQuery)}</span>
