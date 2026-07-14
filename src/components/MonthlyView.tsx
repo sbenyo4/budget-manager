@@ -45,6 +45,10 @@ function normalizeSearchText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function formatShortDate(value: string): string {
+  return new Date(`${value}T00:00:00`).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+}
+
 function activeSearchQuery(value: string): string {
   const normalized = normalizeSearchText(value);
   return normalized.length >= MIN_SEARCH_CHARS ? normalized : "";
@@ -259,6 +263,7 @@ export function MonthlyView({
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedDebitId, setExpandedDebitId] = useState<string | null>(null);
   const [excludedCategories, setExcludedCategories] = useState<Set<string>>(() => new Set());
+  const [pendingDetailsOpen, setPendingDetailsOpen] = useState(false);
   const sectionOverrides = preferences.sectionOverrides;
   const oneTimeExpenses = useMemo(() => new Set(preferences.oneTimeExpenses), [preferences.oneTimeExpenses]);
   const highAmountThreshold = preferences.highAmountThreshold;
@@ -317,6 +322,36 @@ export function MonthlyView({
     () => sum(pendingCard.filter((t) => t.type !== "income")) - sum(pendingCard.filter((t) => t.type === "income")),
     [pendingCard]
   );
+  const pendingGroups = useMemo(() => {
+    const groups = new Map<string, { billingDate?: string; cardLast4?: string; total: number; transactions: Transaction[] }>();
+    for (const tx of pendingCard) {
+      const key = `${tx.billingDate ?? "next"}::${tx.cardLast4 ?? ""}`;
+      const group = groups.get(key) ?? {
+        billingDate: tx.billingDate,
+        cardLast4: tx.cardLast4,
+        total: 0,
+        transactions: [],
+      };
+      group.total += tx.type === "income" ? -tx.amount : tx.amount;
+      group.transactions.push(tx);
+      groups.set(key, group);
+    }
+    return [...groups.values()]
+      .map((group) => ({ ...group, transactions: [...group.transactions].sort((a, b) => b.date.localeCompare(a.date)) }))
+      .sort((a, b) => (a.billingDate ?? "9999-99-99").localeCompare(b.billingDate ?? "9999-99-99"));
+  }, [pendingCard]);
+  const pendingBillingSummaries = useMemo(() => {
+    const summaries = new Map<string, { billingDate?: string; total: number; count: number }>();
+    for (const group of pendingGroups) {
+      const key = group.billingDate ?? "next";
+      const summary = summaries.get(key) ?? { billingDate: group.billingDate, total: 0, count: 0 };
+      summary.total += group.total;
+      summary.count += group.transactions.length;
+      summaries.set(key, summary);
+    }
+    return [...summaries.values()].sort((a, b) => (a.billingDate ?? "9999-99-99").localeCompare(b.billingDate ?? "9999-99-99"));
+  }, [pendingGroups]);
+  const nextPendingCharge = pendingBillingSummaries[0];
 
   // Category breakdown: replace the aggregate card debits with the card's
   // own transactions (incl. pending ones — they're real consumption)
@@ -569,16 +604,76 @@ export function MonthlyView({
               : "מחושבת מהיתרה הנוכחית ותנועות הבנק"}
           </span>
         </div>
-        <div className="stat-tile">
+        <button
+          type="button"
+          className={`stat-tile pending-stat-tile ${pendingDetailsOpen ? "active" : ""}`}
+          onClick={() => setPendingDetailsOpen((open) => !open)}
+          aria-expanded={pendingDetailsOpen}
+        >
           <span className="stat-label">אשראי שטרם חויב ⏳</span>
           <span className="stat-value">{formatILSWhole(pendingTotal)}</span>
           <span className="stat-hint">
-            {lastDebitDate
-              ? `עסקאות כרטיס מאז החיוב האחרון (${lastDebitDate.slice(8, 10)}.${lastDebitDate.slice(5, 7)}) — יירדו בחיוב הבא`
-              : "לא נמצאו חיובי אשראי בחשבון"}
+            {pendingCard.length === 0
+              ? "אין עסקאות"
+              : `${pendingCard.length} עסקאות`}
           </span>
-        </div>
+          {nextPendingCharge && (
+            <span className="stat-hint pending-next-charge">
+              <span>
+                {nextPendingCharge.billingDate ? `ב-${formatShortDate(nextPendingCharge.billingDate)}` : "בחיוב הבא"} ירדו{" "}
+                {formatILS(nextPendingCharge.total)}
+              </span>
+            </span>
+          )}
+          <span className="stat-action-icon" aria-hidden>{pendingDetailsOpen ? "▴" : "▾"}</span>
+        </button>
       </div>
+
+      {pendingDetailsOpen && (
+        <section className="pending-card-detail" aria-label="פירוט אשראי שטרם חויב">
+          <div className="pending-card-detail-header">
+            <h3>פירוט אשראי שטרם חויב</h3>
+            <span>{pendingCard.length > 0 ? `${pendingCard.length} עסקאות · ${formatILS(pendingTotal)}` : "אין עסקאות להצגה"}</span>
+          </div>
+          {pendingGroups.length > 0 ? (
+            <div className="pending-card-groups">
+              {pendingGroups.map((group) => (
+                <div key={`${group.billingDate ?? "next"}-${group.cardLast4 ?? "card"}`} className="pending-card-group">
+                  <div className="pending-card-group-head">
+                    <span>
+                      {group.billingDate ? `יחויב ב-${formatShortDate(group.billingDate)}` : "בחיוב הבא"}
+                      {group.cardLast4 && <span className="sub-label"> · כרטיס {group.cardLast4}</span>}
+                    </span>
+                    <strong>{formatILS(group.total)}</strong>
+                  </div>
+                  <ul className="pending-card-list">
+                    {group.transactions.map((tx) => {
+                      const categoryMain = effectiveCategoryMain(tx);
+                      const installment = installmentText(tx);
+                      return (
+                        <li key={tx.id} className="pending-card-item">
+                          <span className="pending-card-date">{formatShortDate(tx.date)}</span>
+                          <span className="pending-card-merchant">
+                            {tx.merchant}
+                            {installment && <span className="sub-label"> · {installment}</span>}
+                          </span>
+                          <span className="pending-card-category">
+                            <span className="swatch" style={{ background: mainColor(categoryMain) }} aria-hidden />
+                            {categoryLabel(categoryMain)}
+                          </span>
+                          <strong className="pending-card-amount">{tx.type === "income" ? "+" : "−"}{formatILS(tx.amount)}</strong>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-row">אין עסקאות אשראי שטרם חויבו בתקופה הזו.</p>
+          )}
+        </section>
+      )}
 
       <div className="donut-grid">
         <Donut

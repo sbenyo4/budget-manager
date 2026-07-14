@@ -493,6 +493,128 @@ h1 {
   color: var(--text-muted);
 }
 
+.pending-stat-tile {
+  position: relative;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  padding-inline-end: 38px;
+}
+
+.pending-stat-tile:hover,
+.pending-stat-tile.active {
+  border-color: var(--text-muted);
+  background: var(--control-wash);
+}
+
+.pending-next-charge {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.stat-action-icon {
+  position: absolute;
+  inset-inline-end: 12px;
+  bottom: 12px;
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.pending-card-detail {
+  margin: -8px 0 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-1);
+}
+
+.pending-card-detail-header,
+.pending-card-group-head,
+.pending-card-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pending-card-detail-header {
+  justify-content: space-between;
+  margin-bottom: 12px;
+  color: var(--text-secondary);
+}
+
+.pending-card-detail-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.pending-card-groups {
+  display: grid;
+  gap: 10px;
+}
+
+.pending-card-group {
+  border: 1px solid var(--gridline);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.pending-card-group-head {
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--control-wash);
+}
+
+.pending-card-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pending-card-item {
+  display: grid;
+  grid-template-columns: 56px minmax(180px, 1fr) minmax(130px, 0.55fr) 92px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--gridline);
+}
+
+.pending-card-date,
+.pending-card-category {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.pending-card-merchant {
+  min-width: 0;
+  color: var(--text-primary);
+  font-weight: 550;
+}
+
+.pending-card-category {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pending-card-amount {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
 .monthly-view > .stat-tiles:not(.category-summary) {
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
@@ -1990,6 +2112,25 @@ h1 {
 
   .monthly-view > .stat-tiles:not(.category-summary) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pending-card-detail-header,
+  .pending-card-group-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .pending-card-item {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+
+  .pending-card-category,
+  .pending-card-amount {
+    grid-column: 2;
+  }
+
+  .pending-card-amount {
+    text-align: start;
   }
 
   .day-cell {
