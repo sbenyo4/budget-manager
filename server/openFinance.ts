@@ -142,6 +142,42 @@ function normalizeDate(value: string): string {
   return value.slice(0, 10);
 }
 
+function parseAdditionalInfo(raw: RawTransaction): Record<string, unknown> | null {
+  const info = raw.description?.additionalInfo;
+  if (!info) return null;
+  try {
+    const parsed = JSON.parse(info) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function cardDebitDuplicateKey(raw: RawTransaction, source: "bank" | "card", date: string, amount: number): string | undefined {
+  if (
+    source !== "bank" ||
+    raw.category?.main !== "INCOMES_EXPENSES" ||
+    raw.category?.sub !== "CREDIT_CARD_CHECKING"
+  ) {
+    return undefined;
+  }
+  const info = parseAdditionalInfo(raw);
+  const accountNo = typeof info?.accountNo === "string" ? info.accountNo : raw.accountNumber ?? "";
+  const description =
+    typeof info?.transactionDescription === "string"
+      ? info.transactionDescription
+      : raw.merchantName || raw.description?.description || "";
+  if (!accountNo || !description) return undefined;
+  return [
+    "bank-card-debit",
+    raw.providerId ?? "",
+    date,
+    Math.abs(amount).toFixed(2),
+    accountNo,
+    description,
+  ].join(":");
+}
+
 function cardLast4(raw: RawTransaction, source: "bank" | "card"): string | undefined {
   if (source === "card") {
     const digits = raw.accountNumber?.replace(/\D/g, "") ?? "";
@@ -180,6 +216,7 @@ function normalize(raw: RawTransaction, index: number, source: "bank" | "card"):
     source === "card"
       ? raw.date?.transactionDate ?? raw.date?.bookingDate ?? raw.date?.valueDate ?? ""
       : raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? "";
+  const date = normalizeDate(rawDate);
   const billingDate = source === "card" && raw.date?.valueDate ? normalizeDate(raw.date.valueDate) : undefined;
   const amount = rawAmount(raw);
   const originalAmount = rawOriginalAmount(raw);
@@ -190,9 +227,9 @@ function normalize(raw: RawTransaction, index: number, source: "bank" | "card"):
 
   return {
     id: raw.id ? `${source}:${raw.id}` : `${source}-tx-${index}`,
-    duplicateKey: raw.id ? `${source}:${raw.id}` : undefined,
+    duplicateKey: cardDebitDuplicateKey(raw, source, date, amount) ?? (raw.id ? `${source}:${raw.id}` : undefined),
     source,
-    date: normalizeDate(rawDate),
+    date,
     ...(billingDate ? { billingDate } : {}),
     ...(last4 ? { cardLast4: last4 } : {}),
     ...(raw.providerId ? { cardProvider: raw.providerId } : {}),

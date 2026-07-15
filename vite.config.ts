@@ -576,6 +576,42 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     return value.slice(0, 10);
   }
 
+  function parseAdditionalInfo(raw: RawTransaction): Record<string, unknown> | null {
+    const info = raw.description?.additionalInfo;
+    if (!info) return null;
+    try {
+      const parsed = JSON.parse(info) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function cardDebitDuplicateKey(raw: RawTransaction, source: "bank" | "card", date: string, amount: number): string | undefined {
+    if (
+      source !== "bank" ||
+      raw.category?.main !== "INCOMES_EXPENSES" ||
+      raw.category?.sub !== "CREDIT_CARD_CHECKING"
+    ) {
+      return undefined;
+    }
+    const info = parseAdditionalInfo(raw);
+    const accountNo = typeof info?.accountNo === "string" ? info.accountNo : raw.accountNumber ?? "";
+    const description =
+      typeof info?.transactionDescription === "string"
+        ? info.transactionDescription
+        : raw.merchantName || raw.description?.description || "";
+    if (!accountNo || !description) return undefined;
+    return [
+      "bank-card-debit",
+      raw.providerId ?? "",
+      date,
+      Math.abs(amount).toFixed(2),
+      accountNo,
+      description,
+    ].join(":");
+  }
+
   function cardLast4(raw: RawTransaction, source: "bank" | "card"): string | undefined {
     if (source === "card") {
       const digits = raw.accountNumber?.replace(/\D/g, "") ?? "";
@@ -596,6 +632,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
       source === "card"
         ? raw.date?.transactionDate ?? raw.date?.bookingDate ?? raw.date?.valueDate ?? ""
         : raw.date?.transactionDate ?? raw.date?.valueDate ?? raw.date?.bookingDate ?? "";
+    const date = normalizeDate(rawDate);
     const billingDate = source === "card" && raw.date?.valueDate ? normalizeDate(raw.date.valueDate) : undefined;
     const amount = rawAmount(raw);
     const originalAmount = rawOriginalAmount(raw);
@@ -606,8 +643,9 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
 
     return {
       id: raw.id ? `${source}:${raw.id}` : `${source}-tx-${index}`,
+      duplicateKey: cardDebitDuplicateKey(raw, source, date, amount) ?? (raw.id ? `${source}:${raw.id}` : undefined),
       source,
-      date: normalizeDate(rawDate),
+      date,
       ...(billingDate ? { billingDate } : {}),
       ...(last4 ? { cardLast4: last4 } : {}),
       ...(raw.providerId ? { cardProvider: raw.providerId } : {}),
@@ -625,7 +663,21 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
   }
 
   type DevTransaction = ReturnType<typeof normalize> & { detailTransactions?: DevPublicTransaction[] };
-  type DevPublicTransaction = Omit<DevTransaction, "detailTransactions">;
+  type DevPublicTransaction = Omit<DevTransaction, "detailTransactions" | "duplicateKey">;
+
+  function dedupeTransactions(transactions: DevTransaction[]): DevPublicTransaction[] {
+    const seen = new Set<string>();
+    const unique: DevPublicTransaction[] = [];
+    for (const tx of transactions) {
+      if (tx.duplicateKey) {
+        if (seen.has(tx.duplicateKey)) continue;
+        seen.add(tx.duplicateKey);
+      }
+      const { duplicateKey: _duplicateKey, ...publicTx } = tx;
+      unique.push(publicTx);
+    }
+    return unique;
+  }
 
   function isCardDebit(tx: DevTransaction): boolean {
     return tx.source === "bank" && tx.categoryMain === "INCOMES_EXPENSES" && tx.categorySub === "CREDIT_CARD_CHECKING";
@@ -825,7 +877,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
             ...bank.map((raw, i) => normalize(raw, i, "bank")),
             ...card.map((raw, i) => normalize(raw, i, "card")),
           ]).filter((tx) => tx.date && tx.date >= from && tx.date <= to && tx.amount > 0);
-          sendJson(res, 200, flows);
+          sendJson(res, 200, dedupeTransactions(flows));
         })
         .catch((err: unknown) => {
           sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
