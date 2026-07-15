@@ -1,7 +1,7 @@
 import type { ApiRequest, ApiResponse } from "../server/http.js";
 import { readJson, sendJson } from "../server/http.js";
 import { currentUser } from "../server/auth.js";
-import { getPreferences, upsertPreferences, type BudgetPreferences } from "../server/db.js";
+import { PREFS_DEFAULT, getPreferences, upsertPreferences, type BudgetPreferences } from "../server/db.js";
 
 function normalizePreferences(body: Partial<BudgetPreferences>): BudgetPreferences {
   const threshold = Number(body.highAmountThreshold);
@@ -28,15 +28,17 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return;
     }
 
-    if (req.method === "PUT") {
-      const prefs = normalizePreferences(await readJson<Partial<BudgetPreferences>>(req));
+    if (req.method === "PUT" || req.method === "PATCH") {
+      const body = await readJson<Partial<BudgetPreferences>>(req);
+      const base = req.method === "PATCH" ? await getPreferences(user.id) : PREFS_DEFAULT;
+      const prefs = normalizePreferences({ ...base, ...body });
       await upsertPreferences(user.id, prefs);
       sendJson(res, 200, prefs);
       return;
     }
 
     res.statusCode = 405;
-    res.setHeader("Allow", "GET, PUT");
+    res.setHeader("Allow", "GET, PUT, PATCH");
     res.end("Method Not Allowed");
   } catch (err) {
     sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });

@@ -1,4 +1,4 @@
-import { Component, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState, useTransition, type FormEvent, type ReactNode } from "react";
 import { fetchCheckingBalance, fetchTransactions } from "./api/openFinance";
 import {
   emptyServiceSettings,
@@ -8,9 +8,10 @@ import {
   loadServiceSettings,
   loginWithGoogle,
   logout,
-  savePreferences,
-  saveServiceSettings,
+  patchPreferences,
+  patchServiceSettings,
   getPinStatus,
+  loadAIModels,
   setupPin,
   verifyPin,
   type AuthUser,
@@ -22,10 +23,12 @@ import { applyCategoryOverrides } from "./logic/categoryOverrides";
 import type { Transaction } from "./types";
 import { MonthlyView } from "./components/MonthlyView";
 import { TrendsView } from "./components/TrendsView";
+import { AIAnalysisView } from "./components/AIAnalysisView";
 
 const YEAR = 2026;
 type ThemeMode = "light" | "dark";
 type PinGateMode = "checking" | "setup" | "locked" | "unlocked" | "unavailable";
+type AppView = "monthly" | "trends" | "ai";
 
 function readInitialTheme(): ThemeMode {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -77,6 +80,47 @@ function isoDaysAgo(days: number): string {
 
 function normalizePin(value: string): string {
   return value.replace(/\D/g, "").slice(0, 4);
+}
+
+function openFinanceSettingsChanged(previous: ServiceSettings, next: ServiceSettings): boolean {
+  return (
+    previous.openFinanceClientId !== next.openFinanceClientId ||
+    previous.openFinanceClientSecret !== next.openFinanceClientSecret ||
+    previous.openFinanceUserId !== next.openFinanceUserId ||
+    previous.openFinanceApiPrefix !== next.openFinanceApiPrefix
+  );
+}
+
+function changedPreferences(previous: BudgetPreferences, next: BudgetPreferences): Partial<BudgetPreferences> {
+  const patch: Partial<BudgetPreferences> = {};
+  if (previous.highAmountThreshold !== next.highAmountThreshold) patch.highAmountThreshold = next.highAmountThreshold;
+  if (previous.theme !== next.theme) patch.theme = next.theme;
+  if (JSON.stringify(previous.sectionOverrides) !== JSON.stringify(next.sectionOverrides)) {
+    patch.sectionOverrides = next.sectionOverrides;
+  }
+  if (JSON.stringify(previous.oneTimeExpenses) !== JSON.stringify(next.oneTimeExpenses)) {
+    patch.oneTimeExpenses = next.oneTimeExpenses;
+  }
+  if (JSON.stringify(previous.fixedExpenses) !== JSON.stringify(next.fixedExpenses)) {
+    patch.fixedExpenses = next.fixedExpenses;
+  }
+  return patch;
+}
+
+function changedServiceSettings(previous: ServiceSettings, next: ServiceSettings): Partial<ServiceSettings> {
+  const patch: Partial<ServiceSettings> = {};
+  if (previous.openFinanceClientId !== next.openFinanceClientId) patch.openFinanceClientId = next.openFinanceClientId;
+  if (previous.openFinanceClientSecret !== next.openFinanceClientSecret) patch.openFinanceClientSecret = next.openFinanceClientSecret;
+  if (previous.openFinanceUserId !== next.openFinanceUserId) patch.openFinanceUserId = next.openFinanceUserId;
+  if (previous.openFinanceApiPrefix !== next.openFinanceApiPrefix) patch.openFinanceApiPrefix = next.openFinanceApiPrefix;
+  if (previous.aiProvider !== next.aiProvider) patch.aiProvider = next.aiProvider;
+  if (previous.aiApiKey !== next.aiApiKey) patch.aiApiKey = next.aiApiKey;
+  if (previous.aiModel !== next.aiModel) patch.aiModel = next.aiModel;
+  return patch;
+}
+
+function hasPatchValue(patch: object): boolean {
+  return Object.keys(patch).length > 0;
 }
 
 interface ErrorBoundaryState {
@@ -134,12 +178,26 @@ function BudgetApp() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const preferencesSaveSeq = useRef(0);
-  const [view, setView] = useState<"monthly" | "trends">("monthly");
+  const preferencesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPreferencesPatchRef = useRef<Partial<BudgetPreferences>>({});
+  const preferencesRef = useRef<BudgetPreferences>(emptyPreferences);
+  const [, startPreferencesTransition] = useTransition();
+  const [view, setView] = useState<AppView>("monthly");
   const [theme, setTheme] = useState<ThemeMode>(readInitialTheme);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    preferencesRef.current = preferences;
+  }, [preferences]);
+
+  useEffect(() => {
+    return () => {
+      if (preferencesSaveTimerRef.current) clearTimeout(preferencesSaveTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     window.location.hash = view;
@@ -234,21 +292,37 @@ function BudgetApp() {
   }, [pinGate, user]);
 
   const updatePreferences = useCallback((next: BudgetPreferences) => {
+    const patch = changedPreferences(preferencesRef.current, next);
+    preferencesRef.current = next;
     const saveSeq = preferencesSaveSeq.current + 1;
     preferencesSaveSeq.current = saveSeq;
-    setPreferences(next);
+    startPreferencesTransition(() => setPreferences(next));
+    if (!hasPatchValue(patch)) {
+      setSaveState("saved");
+      return;
+    }
+    pendingPreferencesPatchRef.current = { ...pendingPreferencesPatchRef.current, ...patch };
     setSaveState("saving");
-    savePreferences(next)
-      .then((saved) => {
-        if (preferencesSaveSeq.current !== saveSeq) return;
-        setPreferences(saved);
-        setSaveState("saved");
-      })
-      .catch((err: unknown) => {
-        if (preferencesSaveSeq.current !== saveSeq) return;
-        setSaveState("error");
-        setError(err instanceof Error ? err.message : String(err));
-      });
+    if (preferencesSaveTimerRef.current) clearTimeout(preferencesSaveTimerRef.current);
+    preferencesSaveTimerRef.current = setTimeout(() => {
+      preferencesSaveTimerRef.current = null;
+      const patchToSave = pendingPreferencesPatchRef.current;
+      pendingPreferencesPatchRef.current = {};
+      patchPreferences(patchToSave)
+        .then((saved) => {
+          if (preferencesSaveSeq.current !== saveSeq) return;
+          preferencesRef.current = saved;
+          if (JSON.stringify(saved) !== JSON.stringify(next)) {
+            startPreferencesTransition(() => setPreferences(saved));
+          }
+          setSaveState("saved");
+        })
+        .catch((err: unknown) => {
+          if (preferencesSaveSeq.current !== saveSeq) return;
+          setSaveState("error");
+          setError(err instanceof Error ? err.message : String(err));
+        });
+    }, 350);
   }, []);
 
   const migratePreferencesIfNeeded = useCallback((loaded: BudgetPreferences): Promise<BudgetPreferences> => {
@@ -283,17 +357,44 @@ function BudgetApp() {
   }, []);
 
   const handleServiceSettingsSave = useCallback((settings: ServiceSettings, highAmountThreshold: number) => {
-    setSaveState("saving");
     const nextPreferences = { ...preferences, highAmountThreshold };
-    return Promise.all([saveServiceSettings(settings), savePreferences(nextPreferences)])
+    const servicePatch = changedServiceSettings(serviceSettings, settings);
+    const preferencesPatch = changedPreferences(preferences, nextPreferences);
+    const combinedPreferencesPatch = { ...pendingPreferencesPatchRef.current, ...preferencesPatch };
+    const shouldSaveService = hasPatchValue(servicePatch);
+    const shouldSavePreferences = hasPatchValue(combinedPreferencesPatch);
+
+    if (!shouldSaveService && !shouldSavePreferences) {
+      setSettingsOpen(false);
+      setSaveState("saved");
+      return Promise.resolve();
+    }
+
+    setSaveState("saving");
+    if (shouldSavePreferences) {
+      preferencesSaveSeq.current += 1;
+      pendingPreferencesPatchRef.current = {};
+      if (preferencesSaveTimerRef.current) {
+        clearTimeout(preferencesSaveTimerRef.current);
+        preferencesSaveTimerRef.current = null;
+      }
+    }
+    return Promise.all([
+      shouldSaveService ? patchServiceSettings(servicePatch) : Promise.resolve(serviceSettings),
+      shouldSavePreferences ? patchPreferences(combinedPreferencesPatch) : Promise.resolve(preferences),
+    ])
       .then(([savedSettings, savedPreferences]) => {
         setServiceSettings(savedSettings);
+        preferencesRef.current = savedPreferences;
         setPreferences(savedPreferences);
         setSettingsOpen(false);
-        setAllTransactions([]);
-        setBankBalance(null);
+        const shouldReloadData = shouldSaveService && (serviceSettingsRequired || openFinanceSettingsChanged(serviceSettings, savedSettings));
+        if (shouldReloadData) {
+          setAllTransactions([]);
+          setBankBalance(null);
+          setDataReloadKey((key) => key + 1);
+        }
         setServiceSettingsRequired(false);
-        setDataReloadKey((key) => key + 1);
         setSaveState("saved");
       })
       .catch((err: unknown) => {
@@ -302,7 +403,15 @@ function BudgetApp() {
         setError(message);
         throw new Error(message);
       });
-  }, [preferences]);
+  }, [preferences, serviceSettings, serviceSettingsRequired]);
+
+  const handleManualDataReload = useCallback(() => {
+    setError(null);
+    setServiceSettingsRequired(false);
+    setAllTransactions([]);
+    setBankBalance(null);
+    setDataReloadKey((key) => key + 1);
+  }, []);
 
   const learnedTransactions = useMemo(
     () => applyCategoryOverrides(allTransactions, preferences.sectionOverrides),
@@ -372,12 +481,16 @@ function BudgetApp() {
           <h1>
             {view === "monthly" && "תקציב חודשי"}
             {view === "trends" && "מגמות וממוצעים"}
+            {view === "ai" && "ניתוח AI"}
           </h1>
           {view === "monthly" && (
             <p className="subtitle">הכנסות מול הוצאות, ממשכורת עד המשכורת הבאה</p>
           )}
           {view === "trends" && (
             <p className="subtitle">צבירה וממוצעים על פני תקופות — הכנסות, הוצאות וחיסכון בני״ע</p>
+          )}
+          {view === "ai" && (
+            <p className="subtitle">ציון תקציבי והמלצות פעולה על בסיס הנתונים בתקופה</p>
           )}
         </div>
         <div className="header-actions">
@@ -390,6 +503,21 @@ function BudgetApp() {
             <span className={`save-state ${saveState}`}>
               {saveState === "saving" ? "מסנכרן…" : saveState === "error" ? "שגיאת שמירה" : "העדפות מסונכרנות"}
             </span>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="טעינה מחדש של נתוני Open Finance"
+              title="טעינה מחדש של נתוני Open Finance"
+              onClick={handleManualDataReload}
+              disabled={loading}
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
+                <path
+                  d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.76-4.24L13 11h8V3l-3.3 3.3Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </button>
             <button
               className="icon-button theme-toggle"
               type="button"
@@ -448,6 +576,9 @@ function BudgetApp() {
             <button className={`tab ${view === "trends" ? "active" : ""}`} onClick={() => setView("trends")}>
               מגמות
             </button>
+            <button className={`tab ${view === "ai" ? "active" : ""}`} onClick={() => setView("ai")}>
+              ניתוח AI
+            </button>
           </nav>
         </div>
       </header>
@@ -491,6 +622,14 @@ function BudgetApp() {
           onPreferencesChange={updatePreferences}
         />
       )}
+
+      {!loading && !error && !serviceSettingsRequired && view === "ai" && (
+        <AIAnalysisView
+          transactions={displayTransactions}
+          periods={periods}
+          bankBalance={bankBalance}
+        />
+      )}
     </div>
   );
 }
@@ -511,6 +650,8 @@ function ServiceSettingsModal({
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [showSecret, setShowSecret] = useState(false);
+  const [aiModels, setAiModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
 
   useEffect(() => {
     setDraft(settings);
@@ -523,6 +664,72 @@ function ServiceSettingsModal({
   const updateField = (key: keyof ServiceSettings, value: string) => {
     setDraft((current) => ({ ...current, [key]: value }));
   };
+
+  const providerModelOptions: Record<ServiceSettings["aiProvider"], string[]> = {
+    openai: [
+      "gpt-5.6",
+      "gpt-5.6-mini",
+      "gpt-5.6-nano",
+      "gpt-5",
+      "gpt-5-mini",
+      "gpt-5-nano",
+      "gpt-4.1",
+      "gpt-4.1-mini",
+      "gpt-4.1-nano",
+      "gpt-4o",
+      "gpt-4o-mini",
+      "o4-mini",
+      "o3",
+      "o3-mini",
+    ],
+    anthropic: [
+      "claude-fable-5",
+      "claude-opus-4-8",
+      "claude-sonnet-5",
+      "claude-haiku-4-5",
+      "claude-haiku-4-5-20251001",
+      "claude-opus-4-7",
+      "claude-opus-4-6",
+      "claude-sonnet-4-6",
+      "claude-sonnet-4-5",
+      "claude-opus-4-1",
+      "claude-opus-4-0",
+      "claude-sonnet-4-0",
+    ],
+    gemini: [
+      "gemini-3.5-flash",
+      "gemini-3.1-pro",
+      "gemini-3-flash",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite",
+      "gemini-2.0-flash",
+      "gemini-2.0-flash-lite",
+      "gemini-1.5-pro",
+      "gemini-1.5-flash",
+    ],
+  };
+  const modelOptions = aiModels.length > 0 ? aiModels : providerModelOptions[draft.aiProvider];
+
+  useEffect(() => {
+    if (modelOptions.length > 0 && !modelOptions.includes(draft.aiModel)) {
+      setDraft((current) => ({ ...current, aiModel: modelOptions[0] }));
+    }
+  }, [draft.aiModel, modelOptions]);
+
+  const refreshAIModels = useCallback(() => {
+    setModelsLoading(true);
+    setMessage("");
+    loadAIModels({ aiProvider: draft.aiProvider, aiApiKey: draft.aiApiKey })
+      .then(({ models }) => {
+        setAiModels(models);
+        if (models.length > 0 && !models.includes(draft.aiModel)) {
+          setDraft((current) => ({ ...current, aiModel: models[0] }));
+        }
+      })
+      .catch((err: unknown) => setMessage(err instanceof Error ? err.message : String(err)))
+      .finally(() => setModelsLoading(false));
+  }, [draft.aiApiKey, draft.aiModel, draft.aiProvider]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -593,6 +800,58 @@ function ServiceSettingsModal({
                 onChange={(event) => updateField("openFinanceApiPrefix", event.target.value)}
               />
             </label>
+          </fieldset>
+          <fieldset>
+            <legend>AI</legend>
+            <label>
+              ספק
+              <select
+                value={draft.aiProvider}
+                onChange={(event) => {
+                  const provider = event.target.value as ServiceSettings["aiProvider"];
+                  setDraft((current) => ({
+                    ...current,
+                    aiProvider: provider,
+                    aiModel: providerModelOptions[provider][0],
+                  }));
+                  setAiModels([]);
+                }}
+              >
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="gemini">Google Gemini</option>
+              </select>
+            </label>
+            <label>
+              מודל
+              <select
+                dir="ltr"
+                value={draft.aiModel}
+                onChange={(event) => updateField("aiModel", event.target.value)}
+              >
+                {modelOptions.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              API Key
+              <input
+                dir="ltr"
+                type="password"
+                value={draft.aiApiKey}
+                onChange={(event) => {
+                  updateField("aiApiKey", event.target.value);
+                  setAiModels([]);
+                }}
+                placeholder="sk-..."
+              />
+            </label>
+            <button className="table-toggle" type="button" onClick={refreshAIModels} disabled={modelsLoading}>
+              {modelsLoading ? "טוען מודלים..." : "טעינת כל המודלים מהספק"}
+            </button>
           </fieldset>
           <fieldset>
             <legend>תצוגה וסימונים</legend>

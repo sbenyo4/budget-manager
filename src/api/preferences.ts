@@ -18,6 +18,9 @@ export interface ServiceSettings {
   openFinanceClientSecret: string;
   openFinanceUserId: string;
   openFinanceApiPrefix: string;
+  aiProvider: "openai" | "anthropic" | "gemini";
+  aiApiKey: string;
+  aiModel: string;
 }
 
 export const emptyPreferences: BudgetPreferences = {
@@ -33,6 +36,9 @@ export const emptyServiceSettings: ServiceSettings = {
   openFinanceClientSecret: "",
   openFinanceUserId: "",
   openFinanceApiPrefix: "api",
+  aiProvider: "openai",
+  aiApiKey: "",
+  aiModel: "gpt-4o-mini",
 };
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -88,6 +94,13 @@ export function savePreferences(preferences: BudgetPreferences): Promise<BudgetP
   });
 }
 
+export function patchPreferences(preferences: Partial<BudgetPreferences>): Promise<BudgetPreferences> {
+  return apiJson("/api/preferences", {
+    method: "PATCH",
+    body: JSON.stringify(preferences),
+  });
+}
+
 export function loadServiceSettings(): Promise<ServiceSettings> {
   return apiJson("/api/service-settings");
 }
@@ -95,6 +108,41 @@ export function loadServiceSettings(): Promise<ServiceSettings> {
 export function saveServiceSettings(settings: ServiceSettings): Promise<ServiceSettings> {
   return apiJson("/api/service-settings", {
     method: "PUT",
+    body: JSON.stringify(settings),
+  });
+}
+
+export function patchServiceSettings(settings: Partial<ServiceSettings>): Promise<ServiceSettings> {
+  return apiJson("/api/service-settings", {
+    method: "PATCH",
+    body: JSON.stringify(settings),
+  });
+}
+
+export interface AIAnalysisResult {
+  score: number;
+  summary: string;
+  strengths: string[];
+  risks: string[];
+  recommendations: string[];
+}
+
+export function analyzeBudgetWithAI(payload: {
+  analysisMode: "month" | "trend";
+  periodLabel: string;
+  transactions: unknown[];
+  analytics?: unknown;
+  bankBalance: { balance: number; date: string } | null;
+}): Promise<AIAnalysisResult> {
+  return apiJson("/api/ai-analysis", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function loadAIModels(settings: Pick<ServiceSettings, "aiProvider" | "aiApiKey">): Promise<{ models: string[] }> {
+  return apiJson("/api/ai-models", {
+    method: "POST",
     body: JSON.stringify(settings),
   });
 }

@@ -192,6 +192,11 @@ function cardDigitsSummary(tx: Transaction, details: Transaction[]): string | nu
   return `כרטיסים ${last4s.join(", ")}`;
 }
 
+function matchesCardFilter(tx: Transaction, cardFilter: string, details: Transaction[] = []): boolean {
+  if (!cardFilter) return true;
+  return tx.cardLast4 === cardFilter || details.some((detail) => detail.cardLast4 === cardFilter);
+}
+
 function fallbackCardDebitDetails(transactions: Transaction[]): Map<string, Transaction[]> {
   const cardGroupsByBillingDate = new Map<string, Array<{ totalCents: number; details: Transaction[] }>>();
   const debitsByDate = new Map<string, Transaction[]>();
@@ -261,6 +266,7 @@ export function MonthlyView({
 }: Props) {
   const [periodKey, setPeriodKey] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  const [cardFilter, setCardFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedDebitId, setExpandedDebitId] = useState<string | null>(null);
   const [excludedCategories, setExcludedCategories] = useState<Set<string>>(() => new Set());
@@ -299,13 +305,42 @@ export function MonthlyView({
   );
   const bankTxs = useMemo(() => inPeriod.filter((tx) => tx.source !== "card"), [inPeriod]);
   const cardTxs = useMemo(() => inPeriod.filter((tx) => tx.source === "card"), [inPeriod]);
+  const cardTxsByBillingPeriod = useMemo(
+    () =>
+      categorizedTransactions.filter((tx) => {
+        if (tx.source !== "card") return false;
+        const cardPeriodDate = tx.billingDate ?? tx.date;
+        return cardPeriodDate >= periodFrom && cardPeriodDate <= periodTo;
+      }),
+    [categorizedTransactions, periodFrom, periodTo]
+  );
+  const filteredCardTxs = useMemo(
+    () => (cardFilter ? cardTxsByBillingPeriod : cardTxs).filter((tx) => matchesCardFilter(tx, cardFilter)),
+    [cardFilter, cardTxs, cardTxsByBillingPeriod]
+  );
+  const flowTxs = cardFilter ? filteredCardTxs : bankTxs;
+  const cardOptions = useMemo(() => {
+    const last4s = new Set<string>();
+    for (const tx of cardTxsByBillingPeriod) {
+      if (tx.cardLast4) last4s.add(tx.cardLast4);
+    }
+    return [...last4s].sort();
+  }, [cardTxsByBillingPeriod]);
 
   const isPending = (tx: Transaction) => tx.source === "card" && (tx.billingDate ?? tx.date) > lastDebitDate;
+  const chargedCardTxsByBillingPeriod = useMemo(
+    () => cardTxsByBillingPeriod.filter((tx) => !isPending(tx)),
+    [cardTxsByBillingPeriod, lastDebitDate]
+  );
 
   // Account state: what actually moved through the bank account
-  const bankIncome = useMemo(() => sum(bankTxs.filter((t) => t.type === "income")), [bankTxs]);
-  const bankExpense = useMemo(() => sum(bankTxs.filter((t) => t.type !== "income")), [bankTxs]);
+  const bankIncome = useMemo(() => sum(flowTxs.filter((t) => t.type === "income")), [flowTxs]);
+  const bankExpense = useMemo(() => sum(flowTxs.filter((t) => t.type !== "income")), [flowTxs]);
   const net = bankIncome - bankExpense;
+  const accountNet = useMemo(
+    () => sum(bankTxs.filter((t) => t.type === "income")) - sum(bankTxs.filter((t) => t.type !== "income")),
+    [bankTxs]
+  );
   const signedBankMovement = (tx: Transaction) => (tx.type === "income" ? tx.amount : -tx.amount);
   const bankNetAfterPeriod = useMemo(
     () =>
@@ -315,10 +350,10 @@ export function MonthlyView({
     [categorizedTransactions, periodTo]
   );
   const balanceAtPeriodEnd = bankBalance ? bankBalance.balance - bankNetAfterPeriod : null;
-  const balanceAtPeriodStart = balanceAtPeriodEnd === null ? null : balanceAtPeriodEnd - net;
+  const balanceAtPeriodStart = balanceAtPeriodEnd === null ? null : balanceAtPeriodEnd - accountNet;
 
   // Upcoming bill: card activity not yet debited
-  const pendingCard = useMemo(() => cardTxs.filter(isPending), [cardTxs, lastDebitDate]);
+  const pendingCard = useMemo(() => filteredCardTxs.filter(isPending), [filteredCardTxs, lastDebitDate]);
   const pendingTotal = useMemo(
     () => sum(pendingCard.filter((t) => t.type !== "income")) - sum(pendingCard.filter((t) => t.type === "income")),
     [pendingCard]
@@ -353,21 +388,34 @@ export function MonthlyView({
     return [...summaries.values()].sort((a, b) => (a.billingDate ?? "9999-99-99").localeCompare(b.billingDate ?? "9999-99-99"));
   }, [pendingGroups]);
   const nextPendingCharge = pendingBillingSummaries[0];
+  const selectedPendingChargeTotal = nextPendingCharge?.total ?? 0;
 
   // Category breakdown: replace the aggregate card debits with the card's
   // own transactions (incl. pending ones — they're real consumption)
   const breakdownExpenses = useMemo(
-    () => [
-      ...bankTxs.filter((t) => t.type !== "income" && !isCardDebit(t)),
-      ...cardTxs.filter((t) => t.type !== "income"),
-    ],
-    [bankTxs, cardTxs]
+    () =>
+      cardFilter
+        ? filteredCardTxs.filter((t) => t.type !== "income" && !isPending(t))
+        : [
+            ...bankTxs.filter((t) => t.type !== "income" && !isCardDebit(t)),
+            ...chargedCardTxsByBillingPeriod.filter((t) => t.type !== "income"),
+          ],
+    [bankTxs, cardFilter, chargedCardTxsByBillingPeriod, filteredCardTxs, lastDebitDate]
   );
   const activeBreakdownExpenses = useMemo(
     () => breakdownExpenses.filter((tx) => !excludedCategories.has(effectiveCategoryMain(tx))),
     [breakdownExpenses, effectiveCategoryMain, excludedCategories]
   );
-  const breakdownIncomes = useMemo(() => inPeriod.filter((t) => t.type === "income"), [inPeriod]);
+  const breakdownIncomes = useMemo(
+    () =>
+      cardFilter
+        ? filteredCardTxs.filter((t) => t.type === "income" && !isPending(t))
+        : [
+            ...inPeriod.filter((t) => t.type === "income" && t.source !== "card"),
+            ...chargedCardTxsByBillingPeriod.filter((t) => t.type === "income"),
+          ],
+    [cardFilter, chargedCardTxsByBillingPeriod, filteredCardTxs, inPeriod, lastDebitDate]
+  );
   const categoryOptions = useMemo(
     () => [...new Set([...breakdownExpenses, ...breakdownIncomes].map(effectiveCategoryMain))],
     [breakdownExpenses, breakdownIncomes, effectiveCategoryMain]
@@ -415,16 +463,18 @@ export function MonthlyView({
     };
   }, [allExpenseTotal, categoryFilter, expenseSummaryByCategory, incomeSummaryByCategory]);
 
-  const sortedAccountMovements = useMemo(() => [...bankTxs].sort((a, b) => b.date.localeCompare(a.date)), [bankTxs]);
-  const categoryListed = useMemo(
+  const txSortDate = useCallback((tx: Transaction) => tx.source === "card" ? tx.billingDate ?? tx.date : tx.date, []);
+  const sortedAccountMovements = useMemo(() => [...flowTxs].sort((a, b) => b.date.localeCompare(a.date)), [flowTxs]);
+  const sortedCategoryMovements = useMemo(
     () =>
-      sortedAccountMovements.filter(
-        (tx) =>
-          !categoryFilter ||
-          effectiveCategoryMain(tx) === categoryFilter ||
-          Boolean(tx.detailTransactions?.some((detail) => effectiveCategoryMain(detail) === categoryFilter))
-      ),
-    [categoryFilter, effectiveCategoryMain, sortedAccountMovements]
+      [...breakdownExpenses, ...breakdownIncomes]
+        .filter((tx) => !categoryFilter || effectiveCategoryMain(tx) === categoryFilter)
+        .sort((a, b) => txSortDate(b).localeCompare(txSortDate(a)) || b.date.localeCompare(a.date)),
+    [breakdownExpenses, breakdownIncomes, categoryFilter, effectiveCategoryMain, txSortDate]
+  );
+  const categoryListed = useMemo(
+    () => (categoryFilter ? sortedCategoryMovements : sortedAccountMovements),
+    [categoryFilter, sortedAccountMovements, sortedCategoryMovements]
   );
   const normalizedSearchQuery = useMemo(() => activeSearchQuery(searchQuery), [searchQuery]);
   const visibleSearchQuery = visibleSearchTerm(searchQuery);
@@ -455,7 +505,9 @@ export function MonthlyView({
     setCategoryFilter((current) => (current === key ? null : key));
   }, []);
   const listed = useMemo(
-    () => categoryListed.filter(txMatchesVisibleSearch),
+    () =>
+      categoryListed
+        .filter(txMatchesVisibleSearch),
     [categoryListed, txMatchesVisibleSearch]
   );
 
@@ -503,6 +555,7 @@ export function MonthlyView({
           onChange={(e) => {
             setPeriodKey(e.target.value);
             setCategoryFilter(null);
+            setCardFilter("");
             setSearchQuery("");
             setExpandedDebitId(null);
           }}
@@ -523,6 +576,20 @@ export function MonthlyView({
           {categoryOptions.map((m) => (
             <option key={m} value={m}>
               {categoryLabel(m)}
+            </option>
+          ))}
+        </select>
+        <label htmlFor="card-select">כרטיס:</label>
+        <select
+          id="card-select"
+          className="card-select"
+          value={cardFilter}
+          onChange={(e) => setCardFilter(e.target.value)}
+        >
+          <option value="">הכל</option>
+          {cardOptions.map((last4) => (
+            <option key={last4} value={last4}>
+              כרטיס {last4}
             </option>
           ))}
         </select>
@@ -567,21 +634,21 @@ export function MonthlyView({
 
       <div className="stat-tiles">
         <div className="stat-tile">
-          <span className="stat-label">הכנסות לחשבון</span>
+          <span className="stat-label">{cardFilter ? "זיכויים בכרטיס" : "הכנסות לחשבון"}</span>
           <span className="stat-value">{formatILSWhole(bankIncome)}</span>
-          <span className="stat-hint">כל מה שנכנס לעו״ש</span>
+          <span className="stat-hint">{cardFilter ? `כרטיס ${cardFilter}` : "כל מה שנכנס לעו״ש"}</span>
         </div>
         <div className="stat-tile">
-          <span className="stat-label">יצא מהחשבון</span>
+          <span className="stat-label">{cardFilter ? "הוצאות בכרטיס" : "יצא מהחשבון"}</span>
           <span className="stat-value">{formatILSWhole(bankExpense)}</span>
-          <span className="stat-hint">כולל חיובי אשראי, ני״ע והעברות</span>
+          <span className="stat-hint">{cardFilter ? "כל עסקאות הכרטיס בתקופה" : "כולל חיובי אשראי, ני״ע והעברות"}</span>
         </div>
         <div className="stat-tile highlight">
-          <span className="stat-label">תזרים בתקופה</span>
+          <span className="stat-label">{cardFilter ? "נטו בכרטיס" : "תזרים בתקופה"}</span>
           <span className={`stat-value ${net >= 0 ? "net-positive" : "net-negative"}`}>
             {net >= 0 ? "▲" : "▼"} {formatILSWhole(Math.abs(net))}
           </span>
-          <span className="stat-hint">הכנסות לעו״ש פחות יציאות אמיתיות מהעו״ש</span>
+          <span className="stat-hint">{cardFilter ? "זיכויים פחות עסקאות בכרטיס" : "הכנסות לעו״ש פחות יציאות אמיתיות מהעו״ש"}</span>
         </div>
         <div className={bankBalance ? "stat-tile highlight" : "stat-tile"}>
           <span className="stat-label">{bankBalance ? "יתרת עו״ש בפועל" : "יתרת עו״ש בפועל"}</span>
@@ -611,18 +678,19 @@ export function MonthlyView({
           onClick={() => setPendingDetailsOpen((open) => !open)}
           aria-expanded={pendingDetailsOpen}
         >
-          <span className="stat-label">אשראי שטרם חויב ⏳</span>
-          <span className="stat-value">{formatILSWhole(pendingTotal)}</span>
+          <span className="stat-label">חיוב לחודש הנבחר ⏳</span>
+          <span className="stat-value">{formatILSWhole(selectedPendingChargeTotal)}</span>
           <span className="stat-hint">
             {pendingCard.length === 0
               ? "אין עסקאות"
-              : `${pendingCard.length} עסקאות`}
+              : nextPendingCharge?.billingDate
+                ? `ירד ב-${formatShortDate(nextPendingCharge.billingDate)}`
+                : "בחיוב הבא"}
           </span>
-          {nextPendingCharge && (
+          {pendingCard.length > 0 && (
             <span className="stat-hint pending-next-charge">
               <span>
-                {nextPendingCharge.billingDate ? `ב-${formatShortDate(nextPendingCharge.billingDate)}` : "בחיוב הבא"} ירדו{" "}
-                {formatILS(nextPendingCharge.total)}
+                סה"כ שטרם חויב: {formatILS(pendingTotal)} · {pendingCard.length} עסקאות
               </span>
             </span>
           )}
@@ -698,15 +766,17 @@ export function MonthlyView({
       <section className="period-detail">
         <div className="detail-header">
           <h2>
-            תנועות חשבון בפועל
+            {categoryFilter ? "תנועות בקטגוריה" : cardFilter ? "עסקאות בכרטיס" : "תנועות חשבון בפועל"}
             {categoryFilter && <span className="filter-tag"> · {categoryLabel(categoryFilter)}</span>}
+            {cardFilter && <span className="filter-tag"> · כרטיס {cardFilter}</span>}
             {hasActiveSearch && <span className="filter-tag"> · "{visibleSearchQuery}"</span>}
           </h2>
-          {(categoryFilter || hasActiveSearch) && (
+          {(categoryFilter || cardFilter || hasActiveSearch) && (
             <button
               className="table-toggle"
               onClick={() => {
                 setCategoryFilter(null);
+                setCardFilter("");
                 setSearchQuery("");
               }}
             >

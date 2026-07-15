@@ -329,23 +329,56 @@ function transactionAndDetails(tx: Transaction): Transaction[] {
 
 export function applyCategoryOverrides(transactions: Transaction[], overrides: SectionOverrides): Transaction[] {
   const savedOverrides = savedOverridesFor(overrides);
+  const savedCategoryCache = new Map<string, string | undefined>();
+  const defaultCategoryCache = new Map<string, string | undefined>();
   const learned = transactions.flatMap((tx) => transactionAndDetails(tx)).flatMap((tx) => {
     const merchant = merchantKey(tx);
     const category =
-      savedCategoryForMerchant(merchant, overrides, savedOverrides) ||
-      defaultCategoryForMerchant(merchant) ||
+      savedCategoryWithCache(merchant, overrides, savedOverrides, savedCategoryCache) ||
+      defaultCategoryWithCache(merchant) ||
       normalizeCategoryKey(tx.categoryMain);
     return isUsefulLearnedCategory(category)
       ? [{ merchant: merchantFingerprint(merchant), category, recurring: Boolean(tx.recurring) || isKnownRecurringMerchant(merchant) }]
       : [];
   });
+  const learnedCache = new Map<string, { category?: string; recurring?: boolean }>();
+
+  function savedCategoryWithCache(
+    merchant: string,
+    currentOverrides: SectionOverrides,
+    currentSavedOverrides: SavedOverride[],
+    cache: Map<string, string | undefined>
+  ): string | undefined {
+    const normalized = merchantFingerprint(merchant);
+    if (cache.has(normalized)) return cache.get(normalized);
+    const category = savedCategoryForMerchant(merchant, currentOverrides, currentSavedOverrides);
+    cache.set(normalized, category);
+    return category;
+  }
+
+  function learnedCategoryWithCache(merchant: string) {
+    const normalized = merchantFingerprint(merchant);
+    const cached = learnedCache.get(normalized);
+    if (cached) return cached;
+    const result = learnedCategoryForMerchant(merchant, learned);
+    learnedCache.set(normalized, result);
+    return result;
+  }
+
+  function defaultCategoryWithCache(merchant: string): string | undefined {
+    const normalized = merchantFingerprint(merchant);
+    if (defaultCategoryCache.has(normalized)) return defaultCategoryCache.get(normalized);
+    const category = defaultCategoryForMerchant(merchant);
+    defaultCategoryCache.set(normalized, category);
+    return category;
+  }
 
   const applyToTransaction = (tx: Transaction): Transaction => {
     const merchant = merchantKey(tx);
-    const learnedMatch = learnedCategoryForMerchant(merchant, learned);
+    const learnedMatch = learnedCategoryWithCache(merchant);
     const target =
-      savedCategoryForMerchant(merchant, overrides, savedOverrides) ||
-      defaultCategoryForMerchant(merchant) ||
+      savedCategoryWithCache(merchant, overrides, savedOverrides, savedCategoryCache) ||
+      defaultCategoryWithCache(merchant) ||
       learnedMatch.category;
     const recurring = tx.recurring || isKnownRecurringMerchant(merchant) || learnedMatch.recurring;
     const detailTransactions = tx.detailTransactions?.map(applyToTransaction);

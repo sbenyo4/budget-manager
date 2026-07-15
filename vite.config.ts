@@ -6,6 +6,8 @@ import { createHash, createPublicKey, randomBytes, verify as verifySignature } f
 import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { analyzeBudget, type AIAnalysisPayload } from "./server/aiAnalysis";
+import { listAIModels } from "./server/aiModels";
 
 /**
  * Server-side proxy for the open-finance.ai API.
@@ -96,6 +98,9 @@ interface ServiceSettings {
   openFinanceClientSecret: string;
   openFinanceUserId: string;
   openFinanceApiPrefix: string;
+  aiProvider: "openai" | "anthropic" | "gemini";
+  aiApiKey: string;
+  aiModel: string;
 }
 
 const EMPTY_SERVICE_SETTINGS: ServiceSettings = {
@@ -103,9 +108,13 @@ const EMPTY_SERVICE_SETTINGS: ServiceSettings = {
   openFinanceClientSecret: "",
   openFinanceUserId: "",
   openFinanceApiPrefix: "api",
+  aiProvider: "openai",
+  aiApiKey: "",
+  aiModel: "gpt-4o-mini",
 };
 
 function normalizeServiceSettings(body: Partial<ServiceSettings>): ServiceSettings {
+  const provider = body.aiProvider === "anthropic" || body.aiProvider === "gemini" ? body.aiProvider : "openai";
   return {
     openFinanceClientId: typeof body.openFinanceClientId === "string" ? body.openFinanceClientId.trim() : "",
     openFinanceClientSecret:
@@ -114,6 +123,16 @@ function normalizeServiceSettings(body: Partial<ServiceSettings>): ServiceSettin
     openFinanceApiPrefix: typeof body.openFinanceApiPrefix === "string" && body.openFinanceApiPrefix.trim()
       ? body.openFinanceApiPrefix.trim()
       : "api",
+    aiProvider: provider,
+    aiApiKey: typeof body.aiApiKey === "string" ? body.aiApiKey.trim() : "",
+    aiModel:
+      typeof body.aiModel === "string" && body.aiModel.trim()
+        ? body.aiModel.trim()
+        : provider === "anthropic"
+          ? "claude-haiku-4-5"
+          : provider === "gemini"
+            ? "gemini-2.0-flash"
+            : "gpt-4o-mini",
   };
 }
 
@@ -371,10 +390,12 @@ function preferencesAuth(env: Record<string, string>): Plugin {
         sendJson(res, 200, row ? normalizeBudgetPreferences(JSON.parse(row.data)) : PREFS_DEFAULT);
         return;
       }
-      if (req.method === "PUT") {
+      if (req.method === "PUT" || req.method === "PATCH") {
         readBody(req)
           .then((raw) => {
-            const prefs = normalizeBudgetPreferences(JSON.parse(raw));
+            const row = getPrefs.get(user.id) as { data: string } | undefined;
+            const base = req.method === "PATCH" && row ? normalizeBudgetPreferences(JSON.parse(row.data)) : PREFS_DEFAULT;
+            const prefs = normalizeBudgetPreferences({ ...base, ...JSON.parse(raw) });
             upsertPrefs.run(user.id, JSON.stringify(prefs));
             sendJson(res, 200, prefs);
           })
@@ -394,16 +415,53 @@ function preferencesAuth(env: Record<string, string>): Plugin {
         sendJson(res, 200, row ? normalizeServiceSettings(JSON.parse(row.data)) : EMPTY_SERVICE_SETTINGS);
         return;
       }
-      if (req.method === "PUT") {
+      if (req.method === "PUT" || req.method === "PATCH") {
         readBody(req)
           .then((raw) => {
-            const settings = normalizeServiceSettings(JSON.parse(raw));
+            const row = getServiceSettings.get(user.id) as { data: string } | undefined;
+            const base = req.method === "PATCH" && row ? normalizeServiceSettings(JSON.parse(row.data)) : EMPTY_SERVICE_SETTINGS;
+            const settings = normalizeServiceSettings({ ...base, ...JSON.parse(raw) });
             upsertServiceSettings.run(user.id, JSON.stringify(settings));
             sendJson(res, 200, settings);
           })
           .catch((err: unknown) => sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) }));
         return;
       }
+    }
+
+    if (url.pathname === "/api/ai-analysis" && req.method === "POST") {
+      const user = currentUser(req);
+      if (!user) {
+        sendJson(res, 401, { error: "AUTH_REQUIRED" });
+        return;
+      }
+      const row = getServiceSettings.get(user.id) as { data: string } | undefined;
+      const settings = row ? normalizeServiceSettings(JSON.parse(row.data)) : EMPTY_SERVICE_SETTINGS;
+      readBody(req)
+        .then((raw) => analyzeBudget(settings, JSON.parse(raw) as AIAnalysisPayload))
+        .then((analysis) => sendJson(res, 200, analysis))
+        .catch((err: unknown) => sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) }));
+      return;
+    }
+
+    if (url.pathname === "/api/ai-models" && req.method === "POST") {
+      const user = currentUser(req);
+      if (!user) {
+        sendJson(res, 401, { error: "AUTH_REQUIRED" });
+        return;
+      }
+      const row = getServiceSettings.get(user.id) as { data: string } | undefined;
+      const saved = row ? normalizeServiceSettings(JSON.parse(row.data)) : EMPTY_SERVICE_SETTINGS;
+      readBody(req)
+        .then((raw) => {
+          const body = JSON.parse(raw) as Partial<Pick<ServiceSettings, "aiProvider" | "aiApiKey">>;
+          const provider = body.aiProvider === "anthropic" || body.aiProvider === "gemini" ? body.aiProvider : "openai";
+          const apiKey = typeof body.aiApiKey === "string" && body.aiApiKey.trim() ? body.aiApiKey.trim() : saved.aiApiKey;
+          return listAIModels(provider, apiKey);
+        })
+        .then((models) => sendJson(res, 200, { models }))
+        .catch((err: unknown) => sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) }));
+      return;
     }
 
     if (url.pathname === "/api/pin") {

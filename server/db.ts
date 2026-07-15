@@ -20,6 +20,9 @@ export interface ServiceSettings {
   openFinanceClientSecret: string;
   openFinanceUserId: string;
   openFinanceApiPrefix: string;
+  aiProvider: "openai" | "anthropic" | "gemini";
+  aiApiKey: string;
+  aiModel: string;
 }
 
 export const PREFS_DEFAULT: BudgetPreferences = {
@@ -35,6 +38,9 @@ export const SERVICE_SETTINGS_DEFAULT: ServiceSettings = {
   openFinanceClientSecret: "",
   openFinanceUserId: "",
   openFinanceApiPrefix: "api",
+  aiProvider: "openai",
+  aiApiKey: "",
+  aiModel: "gpt-4o-mini",
 };
 
 let schemaReady: Promise<void> | null = null;

@@ -967,7 +967,8 @@ h1 {
   font-size: 0.9rem;
 }
 
-.settings-form input {
+.settings-form input,
+.settings-form select {
   min-height: 38px;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -977,7 +978,8 @@ h1 {
   padding: 7px 10px;
 }
 
-.settings-form input:focus {
+.settings-form input:focus,
+.settings-form select:focus {
   outline: 2px solid var(--must);
   outline-offset: 2px;
 }
@@ -1149,6 +1151,10 @@ h1 {
   border-radius: 8px;
   padding: 7px 10px;
   min-width: 240px;
+}
+
+.period-row .card-select {
+  min-width: 150px;
 }
 
 .monthly-search,
@@ -2095,6 +2101,76 @@ h1 {
 .period-detail h2 {
   margin: 0 0 10px;
   font-size: 1.15rem;
+}
+
+/* — AI analysis — */
+.ai-view {
+  display: grid;
+  gap: 18px;
+}
+
+.ai-stat-tiles {
+  margin-bottom: 0;
+}
+
+.ai-analysis-panel {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.empty-ai-panel {
+  display: block;
+}
+
+.ai-score-card {
+  display: grid;
+  place-items: center;
+  min-height: 150px;
+  border: 1px solid var(--gridline);
+  border-radius: 10px;
+  background: var(--control-wash);
+}
+
+.ai-score-card strong {
+  color: var(--must);
+  font-size: 3.4rem;
+  line-height: 1;
+}
+
+.ai-summary {
+  align-self: center;
+}
+
+.ai-summary h2,
+.ai-list h3 {
+  margin: 0 0 8px;
+}
+
+.ai-summary p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.ai-list {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--gridline);
+  padding-top: 12px;
+}
+
+.ai-list ul {
+  margin: 0;
+  padding-inline-start: 22px;
+  color: var(--text-secondary);
+}
+
+.ai-list li + li {
+  margin-top: 6px;
 }
 
 @media (max-width: 720px) {
