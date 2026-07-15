@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Transaction } from "../types";
 import { formatILS } from "./format";
+import { PowerIcon } from "./PowerIcon";
 import { transactionHighlightClass } from "./transactionHighlight";
 
 export interface DonutSlice {
@@ -169,7 +170,7 @@ export function Donut({
                       aria-label={excludedKeys?.has(s.key) ? `החזרת ${s.label} לחישוב` : `הוצאת ${s.label} מהחישוב`}
                       aria-pressed={!excludedKeys?.has(s.key)}
                     >
-                      ⏻
+                      <PowerIcon />
                     </button>
                   )}
                   <button

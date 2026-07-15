@@ -14,6 +14,7 @@ import {
 } from "../logic/categoryOverrides";
 import { Donut, type DonutSlice } from "./Donut";
 import { formatILS, formatILSWhole, todayIso } from "./format";
+import { PowerIcon } from "./PowerIcon";
 import { transactionHighlightClass } from "./transactionHighlight";
 
 interface Props {
@@ -803,7 +804,7 @@ export function MonthlyView({
                             toggleCategoryInCalculation(displayCategoryMain);
                           }}
                         >
-                          ⏻
+                          <PowerIcon />
                         </button>
                         <button
                           type="button"
@@ -887,7 +888,7 @@ export function MonthlyView({
                                       toggleCategoryInCalculation(detailCategoryMain);
                                     }}
                                   >
-                                    ⏻
+                                    <PowerIcon />
                                   </button>
                                   <button
                                     type="button"

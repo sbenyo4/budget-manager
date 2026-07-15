@@ -1319,6 +1319,7 @@ h1 {
 }
 
 .legend-power {
+  position: relative;
   width: 26px;
   height: 26px;
   display: inline-grid;
@@ -1331,6 +1332,21 @@ h1 {
 
 .legend-row.excluded .legend-power {
   color: var(--avoid);
+}
+
+.power-icon {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 14px;
+  height: 14px;
+  transform: translate(-50%, -50%);
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
 }
 
 .legend-power:hover,
@@ -1718,6 +1734,7 @@ h1 {
 }
 
 .category-power {
+  position: relative;
   width: 26px;
   height: 26px;
   display: inline-grid;
