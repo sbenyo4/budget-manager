@@ -372,6 +372,17 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       updated_at = CURRENT_TIMESTAMP
     RETURNING updated_at AS updatedAt
   `);
+  const trimAIAnalysisCache = db.prepare(`
+    DELETE FROM ai_analysis_cache
+    WHERE user_id = ?
+      AND cache_key NOT IN (
+        SELECT cache_key
+        FROM ai_analysis_cache
+        WHERE user_id = ?
+        ORDER BY updated_at DESC
+        LIMIT 200
+      )
+  `);
 
   function pinHash(pin: string, salt: string): string {
     return createHash("sha256").update(`${salt}:${pin}`).digest("hex");
@@ -521,6 +532,7 @@ function preferencesAuth(env: Record<string, string>): Plugin {
 
           const result = await analyzeBudget(settings, payload);
           const saved = upsertAIAnalysisCache.get(user.id, cacheKey, JSON.stringify(result)) as { updatedAt: string } | undefined;
+          trimAIAnalysisCache.run(user.id, user.id);
           return {
             result,
             cached: false,
@@ -626,6 +638,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
   const getServiceSettings = db.prepare("SELECT data FROM service_settings WHERE user_id = ?");
 
   const tokens = new Map<string, { value: string; expiresAt: number }>();
+  const pendingTokens = new Map<string, Promise<string>>();
 
   function currentUser(req: IncomingMessage) {
     const token = parseCookies(req)[SESSION_COOKIE];
@@ -646,24 +659,39 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
   }
 
   async function getToken(ownerId: string, settings: ServiceSettings): Promise<string> {
-    const token = tokens.get(ownerId);
+    const cacheKey = `${ownerId}:${settings.openFinanceApiPrefix}:${settings.openFinanceUserId}:${settings.openFinanceClientId}:${settings.openFinanceClientSecret}`;
+    const token = tokens.get(cacheKey);
     if (token && Date.now() < token.expiresAt - 60_000) return token.value;
-    const res = await fetch(TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId: settings.openFinanceUserId,
-        clientId: settings.openFinanceClientId,
-        clientSecret: settings.openFinanceClientSecret,
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`Token request failed (${res.status}): ${await res.text()}`);
+    const pending = pendingTokens.get(cacheKey);
+    if (pending) return pending;
+
+    const request = (async () => {
+      const res = await fetch(TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: settings.openFinanceUserId,
+          clientId: settings.openFinanceClientId,
+          clientSecret: settings.openFinanceClientSecret,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`Token request failed (${res.status}): ${await res.text()}`);
+      }
+      const body = (await res.json()) as { accessToken?: string; expiresIn?: number };
+      if (!body.accessToken) throw new Error("Token response did not include an access token");
+      const parsedLifetime = Number(body.expiresIn ?? 3_600_000);
+      const rawLifetime = Number.isFinite(parsedLifetime) && parsedLifetime > 0 ? parsedLifetime : 3_600_000;
+      const lifetimeMs = rawLifetime > 0 && rawLifetime <= 86_400 ? rawLifetime * 1000 : rawLifetime;
+      tokens.set(cacheKey, { value: body.accessToken, expiresAt: Date.now() + lifetimeMs });
+      return body.accessToken;
+    })();
+    pendingTokens.set(cacheKey, request);
+    try {
+      return await request;
+    } finally {
+      pendingTokens.delete(cacheKey);
     }
-    const body = (await res.json()) as { accessToken: string; expiresIn?: number };
-    // expiresIn is in milliseconds per the docs' example (3600000)
-    tokens.set(ownerId, { value: body.accessToken, expiresAt: Date.now() + (body.expiresIn ?? 3_600_000) });
-    return body.accessToken;
   }
 
   async function fetchTransactions(
@@ -675,8 +703,14 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
   ): Promise<RawTransaction[]> {
     const accessToken = await getToken(ownerId, settings);
     const items: RawTransaction[] = [];
+    const seenPages = new Set<string>();
     let nextPage: string | undefined;
     do {
+      if (nextPage) {
+        if (seenPages.has(nextPage)) throw new Error("Transactions pagination returned a repeated cursor");
+        seenPages.add(nextPage);
+      }
+      if (seenPages.size > 100) throw new Error("Transactions pagination exceeded 100 pages");
       const url = new URL(`https://${settings.openFinanceApiPrefix}.open-finance.ai/v2/data/transactions`);
       url.searchParams.set("dateFrom", from);
       url.searchParams.set("dateTo", to);
@@ -944,8 +978,14 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
   async function fetchAccounts(ownerId: string, settings: ServiceSettings): Promise<RawAccount[]> {
     const accessToken = await getToken(ownerId, settings);
     const items: RawAccount[] = [];
+    const seenPages = new Set<string>();
     let nextPage: string | undefined;
     do {
+      if (nextPage) {
+        if (seenPages.has(nextPage)) throw new Error("Accounts pagination returned a repeated cursor");
+        seenPages.add(nextPage);
+      }
+      if (seenPages.size > 100) throw new Error("Accounts pagination exceeded 100 pages");
       const url = new URL(`https://${settings.openFinanceApiPrefix}.open-finance.ai/v2/data/accounts`);
       if (nextPage) url.searchParams.set("nextPage", nextPage);
       const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
@@ -1002,6 +1042,12 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     }
 
     if (url.pathname === "/api/transactions") {
+      if (req.method !== "GET") {
+        res.statusCode = 405;
+        res.setHeader("Allow", "GET");
+        res.end("Method Not Allowed");
+        return;
+      }
       const user = currentUser(req);
       const settings = user ? settingsForUser(user.id) : EMPTY_SERVICE_SETTINGS;
       if (!user || !isConfigured(settings)) {
@@ -1010,7 +1056,13 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
       }
       const from = url.searchParams.get("from") ?? "";
       const to = url.searchParams.get("to") ?? "";
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      const validDate = (value: string) => {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+        const [year, month, day] = value.split("-").map(Number);
+        const parsed = new Date(Date.UTC(year, month - 1, day));
+        return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
+      };
+      if (!validDate(from) || !validDate(to) || from > to) {
         sendJson(res, 400, { error: "from/to must be YYYY-MM-DD" });
         return;
       }

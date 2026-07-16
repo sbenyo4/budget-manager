@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
-import { isCardDebit, isConsumption, isSavings } from "../logic/flows";
+import { cardDebitCutoffs, isCardTransactionCharged, isConsumption, isSavings } from "../logic/flows";
 import { categoryLabel } from "../logic/categoryOverrides";
 import { analyzeBudgetWithAI, type AIAnalysisResult, type BudgetPreferences } from "../api/preferences";
 import { formatILSWhole, todayIso } from "./format";
@@ -114,20 +114,12 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
     analysisMode === "month"
       ? selectedPeriod?.label ?? ""
       : `מגמות ${trendPeriods.length} תקופות (${trendFrom} עד ${trendTo})`;
-  const lastDebitDate = useMemo(
-    () =>
-      transactions
-        .filter((tx) => isCardDebit(tx) && tx.type !== "income")
-        .reduce((max, tx) => (tx.date > max ? tx.date : max), ""),
-    [transactions]
-  );
-  const isChargedCardTx = (tx: Transaction) =>
-    tx.source !== "card" || Boolean(lastDebitDate && (tx.billingDate ?? tx.date) <= lastDebitDate);
+  const debitCutoffs = useMemo(() => cardDebitCutoffs(transactions), [transactions]);
 
   const periodBaseTransactions = useMemo(
     () =>
       transactions.filter((tx) => {
-        if (!isChargedCardTx(tx)) return false;
+        if (!isCardTransactionCharged(tx, debitCutoffs)) return false;
         if (analysisMode === "month") {
           if (!selectedPeriod) return false;
           const date = tx.source === "card" ? tx.billingDate ?? tx.date : tx.date;
@@ -135,7 +127,7 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
         }
         return Boolean(trendFrom && trendTo && tx.date >= trendFrom && tx.date <= trendTo);
       }),
-    [analysisMode, lastDebitDate, selectedPeriod, transactions, trendFrom, trendTo]
+    [analysisMode, debitCutoffs, selectedPeriod, transactions, trendFrom, trendTo]
   );
   const categoryOptions = useMemo(() => {
     const totals = new Map<string, number>();
@@ -219,6 +211,10 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
     const incomeTotal = sum(incomes);
     const expenseTotal = sum(expenses);
     const leftoverTotal = incomeTotal - expenseTotal - savingsTotal;
+    const categoryAmountTotal = periodTransactions.reduce(
+      (total, tx) => total + (tx.type === "income" ? -tx.amount : tx.amount),
+      0
+    );
     return {
       periodLabel: analysisLabel,
       analysisMode,
@@ -227,6 +223,11 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
             categoryMain: categoryKey,
             label: selectedCategoryLabel,
             filteredAnalysis: true,
+            total: roundMoney(categoryAmountTotal),
+            averagePerPeriod: roundMoney(categoryAmountTotal / periodCount),
+            monthlyRunRate: roundMoney(monthlyRate(categoryAmountTotal, periodDays)),
+            transactionCount: periodTransactions.length,
+            topMerchants: topRows(merchantTotals, 18),
           }
         : null,
       userProfile,
@@ -240,7 +241,8 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
       },
       creditCardAccounting: {
         basis: "charged_only",
-        lastDebitDate,
+        lastDebitDate: debitCutoffs.latest,
+        lastDebitDatesByCard: Object.fromEntries(debitCutoffs.byLast4),
         excludesPendingCardTransactions: true,
         categoryOverridesAppliedBeforeAnalysis: true,
       },
@@ -306,7 +308,7 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
       topConsumptionMerchants: topRows(merchantTotals, 18),
       savingsAndInvestmentCategories: topRows(savingsCategoryTotals, 8),
     };
-  }, [analysisLabel, analysisMode, categoryKey, expenses, incomes, isPartialSinglePeriod, monthEquivalent, periodCount, periodDays, periodTransactions, savingsTotal, selectedCategoryLabel, selectedPeriod, trendFrom, trendTo, userProfile]);
+  }, [analysisLabel, analysisMode, categoryKey, debitCutoffs, expenses, incomes, isPartialSinglePeriod, monthEquivalent, periodCount, periodDays, periodTransactions, savingsTotal, selectedCategoryLabel, selectedPeriod, trendFrom, trendTo, userProfile]);
 
   const resetAnalysis = () => {
     setResult(null);

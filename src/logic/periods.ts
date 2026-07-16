@@ -13,15 +13,20 @@ export interface Period {
 const DAY_MS = 86_400_000;
 
 function toIso(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+function parseIso(iso: string): Date {
+  const [year, month, day] = iso.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
 }
 
 function addDays(iso: string, n: number): string {
-  return toIso(new Date(new Date(`${iso}T00:00:00`).getTime() + n * DAY_MS));
+  return toIso(new Date(parseIso(iso).getTime() + n * DAY_MS));
 }
 
 function daysBetween(a: string, b: string): number {
-  return (new Date(`${b}T00:00:00`).getTime() - new Date(`${a}T00:00:00`).getTime()) / DAY_MS;
+  return (parseIso(b).getTime() - parseIso(a).getTime()) / DAY_MS;
 }
 
 function shortDate(iso: string): string {
@@ -113,7 +118,8 @@ export function tagSalaries(transactions: Transaction[]): Transaction[] {
  * can be detected in the data.
  */
 export function buildPeriods(transactions: Transaction[]): Period[] {
-  const today = toIso(new Date());
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const salaryDates = detectSalary(transactions).paydays;
 
   const starts: string[] = [];
@@ -145,7 +151,7 @@ function calendarMonthPeriods(transactions: Transaction[], today: string): Perio
   return months.map((ym) => {
     const from = `${ym}-01`;
     const [y, m] = ym.split("-").map(Number);
-    const endOfMonth = toIso(new Date(y, m, 0));
+    const endOfMonth = toIso(new Date(Date.UTC(y, m, 0)));
     return {
       key: ym,
       label: monthName(from),

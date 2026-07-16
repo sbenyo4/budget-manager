@@ -4,6 +4,7 @@ import {
   emptyServiceSettings,
   emptyPreferences,
   getAuthConfig,
+  getCurrentUser,
   loadPreferences,
   loadServiceSettings,
   loginWithGoogle,
@@ -25,7 +26,6 @@ import { MonthlyView } from "./components/MonthlyView";
 import { TrendsView } from "./components/TrendsView";
 import { AIAnalysisView } from "./components/AIAnalysisView";
 
-const YEAR = 2026;
 type ThemeMode = "light" | "dark";
 type PinGateMode = "checking" | "setup" | "locked" | "unlocked" | "unavailable";
 type AppView = "monthly" | "trends" | "ai";
@@ -74,8 +74,14 @@ declare global {
 }
 
 function isoDaysAgo(days: number): string {
-  const d = new Date(Date.now() - days * 86_400_000);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const now = new Date();
+  const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() - days));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+function endOfCurrentYear(): string {
+  const year = new Date().getFullYear();
+  return `${year}-12-31`;
 }
 
 function normalizePin(value: string): string {
@@ -240,18 +246,27 @@ function BudgetApp() {
 
   useEffect(() => {
     let cancelled = false;
-    getAuthConfig()
-      .then(async (config) => {
+    Promise.all([getAuthConfig(), getCurrentUser()])
+      .then(async ([config, session]) => {
         if (cancelled) return;
         setGoogleClientId(config.googleClientId);
-        await logout().catch(() => undefined);
+        if (!session.user) {
+          setUser(null);
+          setPinGate("checking");
+          setPreferences(emptyPreferences);
+          setServiceSettings(emptyServiceSettings);
+          setAllTransactions([]);
+          setBankBalance(null);
+          setPreferencesLoading(false);
+          return;
+        }
+        const savedPreferences = await loadPreferences();
         if (cancelled) return;
-        setUser(null);
+        setUser(session.user);
         setPinGate("checking");
-        setPreferences(emptyPreferences);
-        setServiceSettings(emptyServiceSettings);
-        setAllTransactions([]);
-        setBankBalance(null);
+        preferencesRef.current = savedPreferences;
+        setPreferences(savedPreferences);
+        setTheme(savedPreferences.theme);
         setPreferencesLoading(false);
       })
       .catch((err: unknown) => {
@@ -277,7 +292,7 @@ function BudgetApp() {
     setError(null);
     setServiceSettingsRequired(false);
     // One wide fetch feeds both views: ~13 months back for salary-period history
-    fetchTransactions(isoDaysAgo(400), `${YEAR}-12-31`)
+    fetchTransactions(isoDaysAgo(400), endOfCurrentYear())
       .then(({ transactions: txs, demo }) => {
         setAllTransactions(txs);
         setIsDemoMode(demo);

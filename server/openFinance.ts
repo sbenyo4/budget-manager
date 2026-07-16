@@ -60,35 +60,50 @@ interface NormalizedTransaction {
 type PublicTransaction = Omit<NormalizedTransaction, "duplicateKey">;
 
 const tokens = new Map<string, { value: string; expiresAt: number }>();
+const pendingTokens = new Map<string, Promise<string>>();
 
 export function isOpenFinanceConfigured(settings: ServiceSettings): boolean {
   return Boolean(settings.openFinanceClientId && settings.openFinanceClientSecret && settings.openFinanceUserId);
 }
 
 function tokenCacheKey(settings: ServiceSettings): string {
-  return `${settings.openFinanceApiPrefix}:${settings.openFinanceUserId}:${settings.openFinanceClientId}`;
+  return `${settings.openFinanceApiPrefix}:${settings.openFinanceUserId}:${settings.openFinanceClientId}:${settings.openFinanceClientSecret}`;
 }
 
 async function getToken(settings: ServiceSettings): Promise<string> {
   const cacheKey = tokenCacheKey(settings);
   const cached = tokens.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt - 60_000) return cached.value;
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      userId: settings.openFinanceUserId,
-      clientId: settings.openFinanceClientId,
-      clientSecret: settings.openFinanceClientSecret,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`Token request failed (${res.status}): ${await res.text()}`);
+  const pending = pendingTokens.get(cacheKey);
+  if (pending) return pending;
+
+  const request = (async () => {
+    const res = await fetch(TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: settings.openFinanceUserId,
+        clientId: settings.openFinanceClientId,
+        clientSecret: settings.openFinanceClientSecret,
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`Token request failed (${res.status}): ${await res.text()}`);
+    }
+    const body = (await res.json()) as { accessToken?: string; expiresIn?: number };
+    if (!body.accessToken) throw new Error("Token response did not include an access token");
+    const parsedLifetime = Number(body.expiresIn ?? 3_600_000);
+    const rawLifetime = Number.isFinite(parsedLifetime) && parsedLifetime > 0 ? parsedLifetime : 3_600_000;
+    const lifetimeMs = rawLifetime > 0 && rawLifetime <= 86_400 ? rawLifetime * 1000 : rawLifetime;
+    tokens.set(cacheKey, { value: body.accessToken, expiresAt: Date.now() + lifetimeMs });
+    return body.accessToken;
+  })();
+  pendingTokens.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    pendingTokens.delete(cacheKey);
   }
-  const body = (await res.json()) as { accessToken: string; expiresIn?: number };
-  const token = { value: body.accessToken, expiresAt: Date.now() + (body.expiresIn ?? 3_600_000) };
-  tokens.set(cacheKey, token);
-  return token.value;
 }
 
 async function fetchTransactions(
@@ -99,8 +114,14 @@ async function fetchTransactions(
 ): Promise<RawTransaction[]> {
   const accessToken = await getToken(settings);
   const items: RawTransaction[] = [];
+  const seenPages = new Set<string>();
   let nextPage: string | undefined;
   do {
+    if (nextPage) {
+      if (seenPages.has(nextPage)) throw new Error("Transactions pagination returned a repeated cursor");
+      seenPages.add(nextPage);
+    }
+    if (seenPages.size > 100) throw new Error("Transactions pagination exceeded 100 pages");
     const url = new URL(`https://${settings.openFinanceApiPrefix}.open-finance.ai/v2/data/transactions`);
     url.searchParams.set("dateFrom", from);
     url.searchParams.set("dateTo", to);
@@ -385,8 +406,14 @@ export async function getTransactions(settings: ServiceSettings, from: string, t
 export async function getAccounts(settings: ServiceSettings) {
   const accessToken = await getToken(settings);
   const items: RawAccount[] = [];
+  const seenPages = new Set<string>();
   let nextPage: string | undefined;
   do {
+    if (nextPage) {
+      if (seenPages.has(nextPage)) throw new Error("Accounts pagination returned a repeated cursor");
+      seenPages.add(nextPage);
+    }
+    if (seenPages.size > 100) throw new Error("Accounts pagination exceeded 100 pages");
     const url = new URL(`https://${settings.openFinanceApiPrefix}.open-finance.ai/v2/data/accounts`);
     if (nextPage) url.searchParams.set("nextPage", nextPage);
     const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });

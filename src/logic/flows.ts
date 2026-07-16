@@ -9,6 +9,36 @@ export function isCardDebit(tx: Transaction): boolean {
   return tx.categoryMain === "INCOMES_EXPENSES" && tx.categorySub === "CREDIT_CARD_CHECKING";
 }
 
+export interface CardDebitCutoffs {
+  latest: string;
+  byLast4: Map<string, string>;
+}
+
+export function cardDebitCutoffs(transactions: Transaction[]): CardDebitCutoffs {
+  const byLast4 = new Map<string, string>();
+  let latest = "";
+  for (const tx of transactions) {
+    if (!isCardDebit(tx) || tx.type === "income") continue;
+    if (tx.date > latest) latest = tx.date;
+    const cardNumbers = new Set<string>();
+    if (tx.cardLast4) cardNumbers.add(tx.cardLast4);
+    for (const detail of tx.detailTransactions ?? []) {
+      if (detail.cardLast4) cardNumbers.add(detail.cardLast4);
+    }
+    for (const last4 of cardNumbers) {
+      const previous = byLast4.get(last4) ?? "";
+      if (tx.date > previous) byLast4.set(last4, tx.date);
+    }
+  }
+  return { latest, byLast4 };
+}
+
+export function isCardTransactionCharged(tx: Transaction, cutoffs: CardDebitCutoffs): boolean {
+  if (tx.source !== "card") return true;
+  const cutoff = (tx.cardLast4 ? cutoffs.byLast4.get(tx.cardLast4) : undefined) ?? cutoffs.latest;
+  return Boolean(cutoff && (tx.billingDate ?? tx.date) <= cutoff);
+}
+
 /**
  * Bank transfers this size and up are investment deposits, not payments —
  * the user's monthly investment routine shows up partly as TRANSFER and

@@ -2,7 +2,7 @@ import { Fragment, useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
-import { isCardDebit, isConsumption } from "../logic/flows";
+import { cardDebitCutoffs, isCardDebit, isCardTransactionCharged, isConsumption } from "../logic/flows";
 import type { BudgetPreferences } from "../api/preferences";
 import { displaySubLabel, mainColor } from "../logic/categoryNames";
 import {
@@ -365,13 +365,7 @@ export function MonthlyView({
 
   // Card purchases after the last aggregate card debit haven't been charged
   // to the account yet — they're the upcoming bill
-  const lastDebitDate = useMemo(
-    () =>
-      categorizedTransactions
-        .filter((t) => isCardDebit(t) && t.type !== "income")
-        .reduce((max, t) => (t.date > max ? t.date : max), ""),
-    [categorizedTransactions]
-  );
+  const debitCutoffs = useMemo(() => cardDebitCutoffs(categorizedTransactions), [categorizedTransactions]);
 
   const inPeriod = useMemo(
     () => categorizedTransactions.filter((tx) => tx.date >= periodFrom && tx.date <= periodTo),
@@ -401,10 +395,13 @@ export function MonthlyView({
     return [...last4s].sort();
   }, [cardTxsByBillingPeriod]);
 
-  const isPending = (tx: Transaction) => tx.source === "card" && (tx.billingDate ?? tx.date) > lastDebitDate;
+  const isPending = useCallback(
+    (tx: Transaction) => tx.source === "card" && !isCardTransactionCharged(tx, debitCutoffs),
+    [debitCutoffs]
+  );
   const chargedCardTxsByBillingPeriod = useMemo(
     () => cardTxsByBillingPeriod.filter((tx) => !isPending(tx)),
-    [cardTxsByBillingPeriod, lastDebitDate]
+    [cardTxsByBillingPeriod, isPending]
   );
 
   // Account state: what actually moved through the bank account
@@ -427,7 +424,7 @@ export function MonthlyView({
   const balanceAtPeriodStart = balanceAtPeriodEnd === null ? null : balanceAtPeriodEnd - accountNet;
 
   // Upcoming bill: card activity not yet debited
-  const pendingCard = useMemo(() => filteredCardTxs.filter(isPending), [filteredCardTxs, lastDebitDate]);
+  const pendingCard = useMemo(() => filteredCardTxs.filter(isPending), [filteredCardTxs, isPending]);
   const pendingTotal = useMemo(
     () => sum(pendingCard.filter((t) => t.type !== "income")) - sum(pendingCard.filter((t) => t.type === "income")),
     [pendingCard]
@@ -474,7 +471,7 @@ export function MonthlyView({
             ...bankTxs.filter((t) => t.type !== "income" && !isCardDebit(t)),
             ...chargedCardTxsByBillingPeriod.filter((t) => t.type !== "income"),
           ],
-    [bankTxs, cardFilter, chargedCardTxsByBillingPeriod, filteredCardTxs, lastDebitDate]
+    [bankTxs, cardFilter, chargedCardTxsByBillingPeriod, filteredCardTxs, isPending]
   );
   const fixedExpenseKeys = useMemo(
     () => fixedExpenseKeysFor(categorizedTransactions, periods, oneTimeExpenses, fixedExpenses),
@@ -500,7 +497,7 @@ export function MonthlyView({
             ...inPeriod.filter((t) => t.type === "income" && t.source !== "card"),
             ...chargedCardTxsByBillingPeriod.filter((t) => t.type === "income"),
           ],
-    [cardFilter, chargedCardTxsByBillingPeriod, filteredCardTxs, inPeriod, lastDebitDate]
+    [cardFilter, chargedCardTxsByBillingPeriod, filteredCardTxs, inPeriod, isPending]
   );
   const calculatedBreakdownIncomes = useMemo(
     () => breakdownIncomes.filter((tx) => !excludedTransactionIds.has(tx.id)),

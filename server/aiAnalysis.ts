@@ -92,6 +92,41 @@ function isBudgetIncomeTx(tx: CompactTransaction): boolean {
   return tx.type === "income" && tx.source !== "card" && !["TRADING", "TRANSFER", "ASSETS", "DEPOSIT"].includes(tx.categoryMain ?? "");
 }
 
+function compactTransactionKey(tx: CompactTransaction): string {
+  return [
+    tx.date ?? "",
+    tx.source ?? "",
+    tx.cardProvider ?? "",
+    tx.cardLast4 ?? "",
+    tx.merchant ?? "",
+    tx.categoryMain ?? "",
+    tx.categorySub ?? "",
+    Number(tx.amount ?? 0).toFixed(2),
+  ].join("|");
+}
+
+function mergeAttachedTransactions(
+  transactions: CompactTransaction[],
+  attachedTransactions: CompactTransaction[]
+): CompactTransaction[] {
+  const unmatchedOriginals = new Map<string, number>();
+  for (const tx of transactions) {
+    const key = compactTransactionKey(tx);
+    unmatchedOriginals.set(key, (unmatchedOriginals.get(key) ?? 0) + 1);
+  }
+  const merged = [...transactions];
+  for (const tx of attachedTransactions) {
+    const key = compactTransactionKey(tx);
+    const originalCount = unmatchedOriginals.get(key) ?? 0;
+    if (originalCount > 0) {
+      unmatchedOriginals.set(key, originalCount - 1);
+    } else {
+      merged.push(tx);
+    }
+  }
+  return merged;
+}
+
 function compactPayload(payload: AIAnalysisPayload) {
   const hasProfileContext = Boolean(payload.userProfile?.householdAge || payload.userProfile?.householdSize);
   const mappedTransactions: CompactTransaction[] = payload.transactions.map((tx) => ({
@@ -120,7 +155,7 @@ function compactPayload(payload: AIAnalysisPayload) {
       installment: detail.installment,
     }))
   );
-  const creditCardDetails = [...mappedTransactions, ...attachedCardDetails]
+  const creditCardDetails = mergeAttachedTransactions(mappedTransactions, attachedCardDetails)
     .filter((tx) => tx.source === "card" && tx.type !== "income")
     .sort((a, b) => Number(b.amount ?? 0) - Number(a.amount ?? 0))
     .slice(0, 160);
@@ -206,7 +241,7 @@ function promptFor(payload: AIAnalysisPayload): string {
 הנחיות:
 - התייחס להכנסות, הוצאות, קטגוריות, עסקאות חריגות, תשלומים, אשראי ויתרת בנק אם קיימת.
 - אם קיים analytics, הוא מקור האמת לחישובים. אל תסכם מחדש את העסקאות הגולמיות באופן שסותר אותו.
-- אם analytics.categoryFocus.filteredAnalysis הוא true, מדובר בניתוח ממוקד של קטגוריה אחת בלבד. התמקד בקטגוריה הזו, במגמות/חריגות/סוחרים בתוך הקטגוריה, ואל תציג מסקנות כאילו נותח כל התקציב.
+- אם analytics.categoryFocus.filteredAnalysis הוא true, מדובר בניתוח ממוקד של קטגוריה אחת בלבד. התמקד בקטגוריה הזו, במגמות/חריגות/סוחרים בתוך הקטגוריה, השתמש ב-analytics.categoryFocus.total/averagePerPeriod/monthlyRunRate, ואל תציג מסקנות כאילו נותח כל התקציב. אל תשתמש ב-leftover כמדד מרכזי בניתוח קטגוריה.
 - במצב חודשי, אם קיים analytics.creditCardBreakdown או creditCardDetails, השתמש בפירוט עסקאות האשראי כדי להסביר מה מרכיב את חיובי הכרטיס. אל תנתח רק את שורת חיוב הכרטיס הכוללת מהבנק.
 - עסקאות אשראי משויכות לתקופה לפי billingDate כאשר קיים. purchaseDate הוא תאריך הקנייה, billingDate הוא מועד החיוב התקציבי.
 - במצב חודשי, אשראי מחושב על בסיס charged_only: כלול רק עסקאות שכבר חויבו בפועל עד lastDebitDate. אל תכלול עסקאות טרם חויבו בהוצאות או בקטגוריות התקופה.

@@ -65,8 +65,8 @@ function sql() {
 export function ensureSchema(): Promise<void> {
   if (!schemaReady) {
     const db = sql();
-    schemaReady = Promise.all([
-      db`
+    schemaReady = (async () => {
+      await db`
         CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL,
@@ -75,38 +75,39 @@ export function ensureSchema(): Promise<void> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
-      `,
-      db`
+      `;
+      await Promise.all([
+        db`
         CREATE TABLE IF NOT EXISTS sessions (
         token_hash TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         expires_at BIGINT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
-      `,
-      db`
+        `,
+        db`
         CREATE TABLE IF NOT EXISTS preferences (
         user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
         data JSONB NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
-      `,
-      db`
+        `,
+        db`
         CREATE TABLE IF NOT EXISTS service_settings (
         user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
         data JSONB NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
-      `,
-      db`
+        `,
+        db`
         CREATE TABLE IF NOT EXISTS user_pins (
         user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
         salt TEXT NOT NULL,
         pin_hash TEXT NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
-      `,
-      db`
+        `,
+        db`
         CREATE TABLE IF NOT EXISTS ai_analysis_cache (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         cache_key TEXT NOT NULL,
@@ -114,8 +115,17 @@ export function ensureSchema(): Promise<void> {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (user_id, cache_key)
       )
-      `,
-    ]).then(() => undefined);
+        `,
+      ]);
+      await Promise.all([
+        db`CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions (expires_at)`,
+        db`CREATE INDEX IF NOT EXISTS ai_analysis_cache_user_updated_idx ON ai_analysis_cache (user_id, updated_at DESC)`,
+      ]);
+    })()
+      .catch((error) => {
+        schemaReady = null;
+        throw error;
+      });
   }
   return schemaReady;
 }
@@ -147,6 +157,7 @@ export async function upsertUser(user: AuthUser): Promise<void> {
 
 export async function insertSession(tokenHash: string, userId: string, expiresAt: number): Promise<void> {
   await ensureSchema();
+  await sql()`DELETE FROM sessions WHERE expires_at <= ${Date.now()}`;
   await sql()`
     INSERT INTO sessions (token_hash, user_id, expires_at)
     VALUES (${tokenHash}, ${userId}, ${expiresAt})
@@ -236,6 +247,17 @@ export async function upsertAIAnalysisCache<T = unknown>(
     RETURNING updated_at AS "updatedAt"
   `) as Array<{ updatedAt: Date | string }>;
   const updatedAt = rows[0]?.updatedAt;
+  await sql()`
+    DELETE FROM ai_analysis_cache
+    WHERE user_id = ${userId}
+      AND cache_key NOT IN (
+        SELECT cache_key
+        FROM ai_analysis_cache
+        WHERE user_id = ${userId}
+        ORDER BY updated_at DESC
+        LIMIT 200
+      )
+  `;
   return updatedAt instanceof Date ? updatedAt.toISOString() : String(updatedAt ?? new Date().toISOString());
 }
 

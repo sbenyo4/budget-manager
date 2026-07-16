@@ -5,6 +5,12 @@ import { currentUser } from "../server/auth.js";
 import { getServiceSettings } from "../server/db.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
+  if (req.method !== "GET") {
+    res.statusCode = 405;
+    res.setHeader("Allow", "GET");
+    res.end("Method Not Allowed");
+    return;
+  }
   try {
     const user = await currentUser(req);
     if (!user) {
