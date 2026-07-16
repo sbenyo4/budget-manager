@@ -18,6 +18,10 @@ export interface AIAnalysisPayload {
     detailTransactions?: AIAnalysisPayload["transactions"];
   }>;
   analytics?: unknown;
+  userProfile?: {
+    householdAge: number | null;
+    householdSize: number | null;
+  };
   bankBalance: { balance: number; date: string } | null;
 }
 
@@ -89,6 +93,7 @@ function isBudgetIncomeTx(tx: CompactTransaction): boolean {
 }
 
 function compactPayload(payload: AIAnalysisPayload) {
+  const hasProfileContext = Boolean(payload.userProfile?.householdAge || payload.userProfile?.householdSize);
   const mappedTransactions: CompactTransaction[] = payload.transactions.map((tx) => ({
       date: tx.billingDate ?? tx.date,
       merchant: tx.merchant?.slice(0, 80),
@@ -169,6 +174,10 @@ function compactPayload(payload: AIAnalysisPayload) {
   return {
     analysisMode: payload.analysisMode ?? "month",
     periodLabel: payload.periodLabel,
+    userProfile: payload.userProfile,
+    profileGuidance: hasProfileContext
+      ? "Use userProfile as context when judging whether spending is reasonable for the household age and householdSize. If householdSize is provided, explicitly adjust the assessment for that number of household members and mention that context in the response. Do not assume marital status, children, medical needs, or lifestyle details that were not provided."
+      : undefined,
     bankBalance: payload.bankBalance,
     analytics: payload.analytics,
     transactionCount: mappedTransactions.length,
@@ -182,6 +191,9 @@ function compactPayload(payload: AIAnalysisPayload) {
 }
 
 function promptFor(payload: AIAnalysisPayload): string {
+  const profileInstruction = payload.userProfile?.householdAge || payload.userProfile?.householdSize
+    ? `\nProfile context: the user's household profile is age=${payload.userProfile.householdAge ?? "not provided"}, householdSize=${payload.userProfile.householdSize ?? "not provided"}. Explicitly take householdSize into account when judging whether grocery, health, household, transport, leisure and recurring spending are reasonable. If householdSize is provided, mention in the summary or one recommendation that the assessment is adjusted for ${payload.userProfile.householdSize} household member(s). Do not invent family composition or needs beyond the supplied age and household size.\n`
+    : "";
   return `נתח את תקציב המשתמש בעברית. החזר JSON בלבד, בלי Markdown, במבנה:
 {
   "score": number בין 0 ל-100,
@@ -194,6 +206,7 @@ function promptFor(payload: AIAnalysisPayload): string {
 הנחיות:
 - התייחס להכנסות, הוצאות, קטגוריות, עסקאות חריגות, תשלומים, אשראי ויתרת בנק אם קיימת.
 - אם קיים analytics, הוא מקור האמת לחישובים. אל תסכם מחדש את העסקאות הגולמיות באופן שסותר אותו.
+- אם analytics.categoryFocus.filteredAnalysis הוא true, מדובר בניתוח ממוקד של קטגוריה אחת בלבד. התמקד בקטגוריה הזו, במגמות/חריגות/סוחרים בתוך הקטגוריה, ואל תציג מסקנות כאילו נותח כל התקציב.
 - במצב חודשי, אם קיים analytics.creditCardBreakdown או creditCardDetails, השתמש בפירוט עסקאות האשראי כדי להסביר מה מרכיב את חיובי הכרטיס. אל תנתח רק את שורת חיוב הכרטיס הכוללת מהבנק.
 - עסקאות אשראי משויכות לתקופה לפי billingDate כאשר קיים. purchaseDate הוא תאריך הקנייה, billingDate הוא מועד החיוב התקציבי.
 - במצב חודשי, אשראי מחושב על בסיס charged_only: כלול רק עסקאות שכבר חויבו בפועל עד lastDebitDate. אל תכלול עסקאות טרם חויבו בהוצאות או בקטגוריות התקופה.
@@ -209,6 +222,7 @@ function promptFor(payload: AIAnalysisPayload): string {
 - אם analysisMode הוא trend, התמקד במגמות, שינויים בהרגלים ודפוסים חוזרים לאורך התקופה.
 - אם analysisMode הוא month, התמקד בביצועי החודש, חריגות והמלצות לחודש הבא.
 - אם יש מעט נתונים, ציין שהביטחון נמוך.
+${profileInstruction}
 
 נתונים:
 ${JSON.stringify(compactPayload(payload))}`;

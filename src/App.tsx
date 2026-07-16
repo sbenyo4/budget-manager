@@ -82,6 +82,24 @@ function normalizePin(value: string): string {
   return value.replace(/\D/g, "").slice(0, 4);
 }
 
+function calculateAgeFromBirthDate(birthDate: string, now = new Date()): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(birthDate)) return null;
+  const [year, month, day] = birthDate.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day ||
+    date.getTime() > now.getTime()
+  ) {
+    return null;
+  }
+  let age = now.getFullYear() - year;
+  const birthdayThisYear = new Date(now.getFullYear(), month - 1, day);
+  if (now < birthdayThisYear) age -= 1;
+  return age > 0 ? age : null;
+}
+
 function openFinanceSettingsChanged(previous: ServiceSettings, next: ServiceSettings): boolean {
   return (
     previous.openFinanceClientId !== next.openFinanceClientId ||
@@ -94,6 +112,9 @@ function openFinanceSettingsChanged(previous: ServiceSettings, next: ServiceSett
 function changedPreferences(previous: BudgetPreferences, next: BudgetPreferences): Partial<BudgetPreferences> {
   const patch: Partial<BudgetPreferences> = {};
   if (previous.highAmountThreshold !== next.highAmountThreshold) patch.highAmountThreshold = next.highAmountThreshold;
+  if (previous.householdBirthDate !== next.householdBirthDate) patch.householdBirthDate = next.householdBirthDate;
+  if (previous.householdAge !== next.householdAge) patch.householdAge = next.householdAge;
+  if (previous.householdSize !== next.householdSize) patch.householdSize = next.householdSize;
   if (previous.theme !== next.theme) patch.theme = next.theme;
   if (JSON.stringify(previous.sectionOverrides) !== JSON.stringify(next.sectionOverrides)) {
     patch.sectionOverrides = next.sectionOverrides;
@@ -356,8 +377,11 @@ function BudgetApp() {
     });
   }, []);
 
-  const handleServiceSettingsSave = useCallback((settings: ServiceSettings, highAmountThreshold: number) => {
-    const nextPreferences = { ...preferences, highAmountThreshold };
+  const handleServiceSettingsSave = useCallback((
+    settings: ServiceSettings,
+    profile: Pick<BudgetPreferences, "highAmountThreshold" | "householdBirthDate" | "householdAge" | "householdSize">
+  ) => {
+    const nextPreferences = { ...preferences, ...profile };
     const servicePatch = changedServiceSettings(serviceSettings, settings);
     const preferencesPatch = changedPreferences(preferences, nextPreferences);
     const combinedPreferencesPatch = { ...pendingPreferencesPatchRef.current, ...preferencesPatch };
@@ -628,6 +652,7 @@ function BudgetApp() {
           transactions={displayTransactions}
           periods={periods}
           bankBalance={bankBalance}
+          preferences={preferences}
         />
       )}
     </div>
@@ -643,10 +668,15 @@ function ServiceSettingsModal({
   settings: ServiceSettings;
   preferences: BudgetPreferences;
   onClose: () => void;
-  onSave: (settings: ServiceSettings, highAmountThreshold: number) => Promise<void>;
+  onSave: (
+    settings: ServiceSettings,
+    profile: Pick<BudgetPreferences, "highAmountThreshold" | "householdBirthDate" | "householdAge" | "householdSize">
+  ) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<ServiceSettings>(settings);
   const [highAmountThreshold, setHighAmountThreshold] = useState(String(preferences.highAmountThreshold));
+  const [householdBirthDate, setHouseholdBirthDate] = useState(preferences.householdBirthDate ?? "");
+  const [householdSize, setHouseholdSize] = useState(preferences.householdSize ? String(preferences.householdSize) : "");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [showSecret, setShowSecret] = useState(false);
@@ -659,7 +689,9 @@ function ServiceSettingsModal({
 
   useEffect(() => {
     setHighAmountThreshold(String(preferences.highAmountThreshold));
-  }, [preferences.highAmountThreshold]);
+    setHouseholdBirthDate(preferences.householdBirthDate ?? "");
+    setHouseholdSize(preferences.householdSize ? String(preferences.householdSize) : "");
+  }, [preferences.highAmountThreshold, preferences.householdBirthDate, preferences.householdSize]);
 
   const updateField = (key: keyof ServiceSettings, value: string) => {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -731,12 +763,25 @@ function ServiceSettingsModal({
       .finally(() => setModelsLoading(false));
   }, [draft.aiApiKey, draft.aiModel, draft.aiProvider]);
 
+  const calculatedHouseholdAge = householdBirthDate
+    ? calculateAgeFromBirthDate(householdBirthDate)
+    : preferences.householdAge;
+  const householdAgeDisplay = calculatedHouseholdAge ? String(calculatedHouseholdAge) : "";
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSaving(true);
     setMessage("");
     const threshold = Number(highAmountThreshold);
-    onSave(draft, Number.isFinite(threshold) && threshold >= 0 ? threshold : 5000)
+    const size = Number(householdSize);
+    const birthDate = householdBirthDate || null;
+    const age = birthDate ? calculateAgeFromBirthDate(birthDate) : preferences.householdAge;
+    onSave(draft, {
+      highAmountThreshold: Number.isFinite(threshold) && threshold >= 0 ? threshold : 5000,
+      householdBirthDate: birthDate,
+      householdAge: age,
+      householdSize: Number.isFinite(size) && size > 0 ? size : null,
+    })
       .catch((err: unknown) => setMessage(err instanceof Error ? err.message : String(err)))
       .finally(() => setSaving(false));
   };
@@ -864,6 +909,38 @@ function ServiceSettingsModal({
                 step="100"
                 value={highAmountThreshold}
                 onChange={(event) => setHighAmountThreshold(event.target.value)}
+              />
+            </label>
+            <label>
+              תאריך לידה
+              <input
+                dir="ltr"
+                type="date"
+                value={householdBirthDate}
+                onChange={(event) => setHouseholdBirthDate(event.target.value)}
+                placeholder="לא חובה"
+              />
+            </label>
+            <label>
+              גיל מחושב
+              <input
+                dir="ltr"
+                type="text"
+                value={householdAgeDisplay}
+                readOnly
+                placeholder="יחושב מתאריך הלידה"
+              />
+            </label>
+            <label>
+              מספר נפשות
+              <input
+                dir="ltr"
+                type="number"
+                min="1"
+                step="1"
+                value={householdSize}
+                onChange={(event) => setHouseholdSize(event.target.value)}
+                placeholder="לא חובה"
               />
             </label>
           </fieldset>

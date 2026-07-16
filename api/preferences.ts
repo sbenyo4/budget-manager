@@ -5,12 +5,21 @@ import { PREFS_DEFAULT, getPreferences, upsertPreferences, type BudgetPreference
 
 function normalizePreferences(body: Partial<BudgetPreferences>): BudgetPreferences {
   const threshold = Number(body.highAmountThreshold);
+  const householdAge = Number(body.householdAge);
+  const householdSize = Number(body.householdSize);
+  const householdBirthDate =
+    typeof body.householdBirthDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.householdBirthDate)
+      ? body.householdBirthDate
+      : null;
   return {
     sectionOverrides:
       body.sectionOverrides && typeof body.sectionOverrides === "object" ? body.sectionOverrides : {},
     oneTimeExpenses: Array.isArray(body.oneTimeExpenses) ? body.oneTimeExpenses : [],
     fixedExpenses: Array.isArray(body.fixedExpenses) ? body.fixedExpenses : [],
     highAmountThreshold: Number.isFinite(threshold) && threshold >= 0 ? threshold : 5000,
+    householdBirthDate,
+    householdAge: Number.isFinite(householdAge) && householdAge > 0 ? householdAge : null,
+    householdSize: Number.isFinite(householdSize) && householdSize > 0 ? householdSize : null,
     theme: body.theme === "dark" ? "dark" : "light",
   };
 }

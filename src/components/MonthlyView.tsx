@@ -17,6 +17,19 @@ import { formatILS, formatILSWhole, todayIso } from "./format";
 import { PowerIcon } from "./PowerIcon";
 import { transactionHighlightClass } from "./transactionHighlight";
 
+function OneTimeIcon() {
+  return (
+    <svg className="one-time-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M8 3v4" />
+      <path d="M16 3v4" />
+      <path d="M5 9h14" />
+      <rect x="4" y="5" width="16" height="15" rx="3" />
+      <path d="M12 13v4" />
+      <path d="M10.5 14.5 12 13l1.5 1.5" />
+    </svg>
+  );
+}
+
 interface Props {
   /** Full (multi-month) transaction list — needed to find the last card debit */
   transactions: Transaction[];
@@ -41,6 +54,64 @@ function sliceByMain(txs: Transaction[], categoryFor: (tx: Transaction) => strin
 const sum = (txs: Transaction[]) => txs.reduce((s, t) => s + t.amount, 0);
 const amountCents = (value: number) => Math.round(value * 100);
 const MIN_SEARCH_CHARS = 2;
+type ExpenseScope = "all" | "fixed" | "variable";
+
+function fixedExpenseKey(tx: Transaction): string {
+  return `${tx.categoryMain}::${merchantKey(tx)}`;
+}
+
+function expenseScopeLabel(expenseScope: ExpenseScope): string {
+  if (expenseScope === "fixed") return "קבועות בלבד";
+  if (expenseScope === "variable") return "חד פעמיות / לא קבועות";
+  return "כל ההוצאות";
+}
+
+function periodKeyFor(date: string, periods: Period[]): string | null {
+  return periods.find((p) => date >= p.from && date <= p.to)?.key ?? null;
+}
+
+function isRepeatExpenseGroup(group: { count: number; periodKeys: Set<string> }): boolean {
+  return group.periodKeys.size >= 2 || group.count >= 2;
+}
+
+function fixedExpenseKeysFor(
+  transactions: Transaction[],
+  periods: Period[],
+  oneTimeKeys: Set<string>,
+  forcedFixedKeys: Set<string>
+): Set<string> {
+  const groups = new Map<string, { tx: Transaction; count: number; periodKeys: Set<string>; recurring: boolean }>();
+
+  for (const tx of transactions) {
+    if (tx.type === "income" || !isConsumption(tx)) continue;
+    const key = fixedExpenseKey(tx);
+    const periodKey = periodKeyFor(tx.date, periods);
+    const group = groups.get(key) ?? { tx, count: 0, periodKeys: new Set<string>(), recurring: false };
+    group.count += 1;
+    group.recurring = group.recurring || Boolean(tx.recurring);
+    if (periodKey) group.periodKeys.add(periodKey);
+    groups.set(key, group);
+  }
+
+  const fixedKeys = new Set<string>();
+  for (const [key, group] of groups) {
+    const detailKey = overrideKey(group.tx.categoryMain, merchantKey(group.tx));
+    if (forcedFixedKeys.has(detailKey)) {
+      fixedKeys.add(key);
+      continue;
+    }
+    if (oneTimeKeys.has(detailKey)) continue;
+    if (group.recurring || isRepeatExpenseGroup(group)) fixedKeys.add(key);
+  }
+  return fixedKeys;
+}
+
+function isInExpenseScope(tx: Transaction, expenseScope: ExpenseScope, fixedExpenseKeys: Set<string>): boolean {
+  if (expenseScope === "all") return true;
+  if (tx.type === "income" || !isConsumption(tx)) return false;
+  const isFixed = fixedExpenseKeys.has(fixedExpenseKey(tx));
+  return expenseScope === "fixed" ? isFixed : !isFixed;
+}
 
 function normalizeSearchText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
@@ -181,15 +252,15 @@ function installmentText(tx: Transaction): string | null {
 }
 
 function cardDigitsText(tx: Transaction): string | null {
-  return tx.cardLast4 ? `כרטיס ${tx.cardLast4}` : null;
+  return tx.cardLast4 ? tx.cardLast4 : null;
 }
 
 function cardDigitsSummary(tx: Transaction, details: Transaction[]): string | null {
   if (tx.cardLast4) return cardDigitsText(tx);
-  const last4s = [...new Set(details.map((detail) => detail.cardLast4).filter(Boolean))];
+  const last4s = [...new Set(details.map((detail) => detail.cardLast4).filter((last4): last4 is string => Boolean(last4)))];
   if (last4s.length === 0) return null;
-  if (last4s.length === 1) return `כרטיס ${last4s[0]}`;
-  return `כרטיסים ${last4s.join(", ")}`;
+  if (last4s.length === 1) return last4s[0];
+  return last4s.join(", ");
 }
 
 function matchesCardFilter(tx: Transaction, cardFilter: string, details: Transaction[] = []): boolean {
@@ -270,9 +341,12 @@ export function MonthlyView({
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedDebitId, setExpandedDebitId] = useState<string | null>(null);
   const [excludedCategories, setExcludedCategories] = useState<Set<string>>(() => new Set());
+  const [excludedTransactionIds, setExcludedTransactionIds] = useState<Set<string>>(() => new Set());
   const [pendingDetailsOpen, setPendingDetailsOpen] = useState(false);
+  const [expenseScope, setExpenseScope] = useState<ExpenseScope>("all");
   const sectionOverrides = preferences.sectionOverrides;
   const oneTimeExpenses = useMemo(() => new Set(preferences.oneTimeExpenses), [preferences.oneTimeExpenses]);
+  const fixedExpenses = useMemo(() => new Set(preferences.fixedExpenses), [preferences.fixedExpenses]);
   const highAmountThreshold = preferences.highAmountThreshold;
   const categorizedTransactions = transactions;
   const fallbackDebitDetails = useMemo(() => fallbackCardDebitDetails(categorizedTransactions), [categorizedTransactions]);
@@ -402,9 +476,21 @@ export function MonthlyView({
           ],
     [bankTxs, cardFilter, chargedCardTxsByBillingPeriod, filteredCardTxs, lastDebitDate]
   );
+  const fixedExpenseKeys = useMemo(
+    () => fixedExpenseKeysFor(categorizedTransactions, periods, oneTimeExpenses, fixedExpenses),
+    [categorizedTransactions, fixedExpenses, oneTimeExpenses, periods]
+  );
+  const scopedBreakdownExpenses = useMemo(
+    () => breakdownExpenses.filter((tx) => isInExpenseScope(tx, expenseScope, fixedExpenseKeys)),
+    [breakdownExpenses, expenseScope, fixedExpenseKeys]
+  );
+  const calculatedBreakdownExpenses = useMemo(
+    () => scopedBreakdownExpenses.filter((tx) => !excludedTransactionIds.has(tx.id)),
+    [excludedTransactionIds, scopedBreakdownExpenses]
+  );
   const activeBreakdownExpenses = useMemo(
-    () => breakdownExpenses.filter((tx) => !excludedCategories.has(effectiveCategoryMain(tx))),
-    [breakdownExpenses, effectiveCategoryMain, excludedCategories]
+    () => calculatedBreakdownExpenses.filter((tx) => !excludedCategories.has(effectiveCategoryMain(tx))),
+    [calculatedBreakdownExpenses, effectiveCategoryMain, excludedCategories]
   );
   const breakdownIncomes = useMemo(
     () =>
@@ -416,16 +502,20 @@ export function MonthlyView({
           ],
     [cardFilter, chargedCardTxsByBillingPeriod, filteredCardTxs, inPeriod, lastDebitDate]
   );
+  const calculatedBreakdownIncomes = useMemo(
+    () => breakdownIncomes.filter((tx) => !excludedTransactionIds.has(tx.id)),
+    [breakdownIncomes, excludedTransactionIds]
+  );
   const categoryOptions = useMemo(
-    () => [...new Set([...breakdownExpenses, ...breakdownIncomes].map(effectiveCategoryMain))],
-    [breakdownExpenses, breakdownIncomes, effectiveCategoryMain]
+    () => [...new Set([...scopedBreakdownExpenses, ...breakdownIncomes].map(effectiveCategoryMain))],
+    [scopedBreakdownExpenses, breakdownIncomes, effectiveCategoryMain]
   );
   const categoryEditorOptions = useMemo(
     () => categoryChoices(categoryOptions, sectionOverrides),
     [categoryOptions, sectionOverrides]
   );
-  const expenseSlices = useMemo(() => sliceByMain(breakdownExpenses, effectiveCategoryMain), [breakdownExpenses, effectiveCategoryMain]);
-  const incomeSlices = useMemo(() => sliceByMain(breakdownIncomes, effectiveCategoryMain), [breakdownIncomes, effectiveCategoryMain]);
+  const expenseSlices = useMemo(() => sliceByMain(calculatedBreakdownExpenses, effectiveCategoryMain), [calculatedBreakdownExpenses, effectiveCategoryMain]);
+  const incomeSlices = useMemo(() => sliceByMain(calculatedBreakdownIncomes, effectiveCategoryMain), [calculatedBreakdownIncomes, effectiveCategoryMain]);
   const expenseSummaryByCategory = useMemo(() => {
     const summary = new Map<string, { count: number; total: number }>();
     for (const tx of activeBreakdownExpenses) {
@@ -439,7 +529,7 @@ export function MonthlyView({
   }, [activeBreakdownExpenses, effectiveCategoryMain]);
   const incomeSummaryByCategory = useMemo(() => {
     const summary = new Map<string, { count: number; total: number }>();
-    for (const tx of breakdownIncomes) {
+    for (const tx of calculatedBreakdownIncomes) {
       const category = effectiveCategoryMain(tx);
       const current = summary.get(category) ?? { count: 0, total: 0 };
       current.count += 1;
@@ -447,7 +537,7 @@ export function MonthlyView({
       summary.set(category, current);
     }
     return summary;
-  }, [breakdownIncomes, effectiveCategoryMain]);
+  }, [calculatedBreakdownIncomes, effectiveCategoryMain]);
   const allExpenseTotal = useMemo(() => sum(activeBreakdownExpenses), [activeBreakdownExpenses]);
   const categorySummary = useMemo(() => {
     if (!categoryFilter) return null;
@@ -467,14 +557,14 @@ export function MonthlyView({
   const sortedAccountMovements = useMemo(() => [...flowTxs].sort((a, b) => b.date.localeCompare(a.date)), [flowTxs]);
   const sortedCategoryMovements = useMemo(
     () =>
-      [...breakdownExpenses, ...breakdownIncomes]
+      [...scopedBreakdownExpenses, ...(expenseScope === "all" ? breakdownIncomes : [])]
         .filter((tx) => !categoryFilter || effectiveCategoryMain(tx) === categoryFilter)
         .sort((a, b) => txSortDate(b).localeCompare(txSortDate(a)) || b.date.localeCompare(a.date)),
-    [breakdownExpenses, breakdownIncomes, categoryFilter, effectiveCategoryMain, txSortDate]
+    [breakdownIncomes, categoryFilter, effectiveCategoryMain, expenseScope, scopedBreakdownExpenses, txSortDate]
   );
   const categoryListed = useMemo(
-    () => (categoryFilter ? sortedCategoryMovements : sortedAccountMovements),
-    [categoryFilter, sortedAccountMovements, sortedCategoryMovements]
+    () => (categoryFilter || expenseScope !== "all" ? sortedCategoryMovements : sortedAccountMovements),
+    [categoryFilter, expenseScope, sortedAccountMovements, sortedCategoryMovements]
   );
   const normalizedSearchQuery = useMemo(() => activeSearchQuery(searchQuery), [searchQuery]);
   const visibleSearchQuery = visibleSearchTerm(searchQuery);
@@ -482,22 +572,31 @@ export function MonthlyView({
   const txMatchesVisibleSearch = useCallback(
     (tx: Transaction) => {
       if (!normalizedSearchQuery) return true;
+      const debitDetails = tx.detailTransactions?.length ? tx.detailTransactions : fallbackDebitDetails.get(tx.id) ?? [];
       return (
         txSelfMatchesSearch(tx, normalizedSearchQuery, effectiveCategoryMain(tx)) ||
         Boolean(
-          tx.detailTransactions?.some((detail) =>
+          debitDetails.some((detail) =>
             detailSelfMatchesSearch(detail, normalizedSearchQuery, effectiveCategoryMain(detail))
           )
         )
       );
     },
-    [effectiveCategoryMain, normalizedSearchQuery]
+    [effectiveCategoryMain, fallbackDebitDetails, normalizedSearchQuery]
   );
   const toggleCategoryInCalculation = useCallback((key: string) => {
     setExcludedCategories((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
+      return next;
+    });
+  }, []);
+  const toggleTransactionInCalculation = useCallback((id: string) => {
+    setExcludedTransactionIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }, []);
@@ -593,15 +692,29 @@ export function MonthlyView({
             </option>
           ))}
         </select>
-        <label htmlFor="monthly-search">חיפוש:</label>
-        <input
-          id="monthly-search"
-          className="monthly-search"
-          type="search"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="חיפוש חופשי"
-        />
+        <span className="search-control">
+          <label htmlFor="monthly-search">חיפוש:</label>
+          <input
+            id="monthly-search"
+            className="monthly-search"
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="חיפוש חופשי"
+          />
+        </span>
+        <div className="scope-toggle" role="group" aria-label="סינון הוצאות">
+          <button type="button" className={expenseScope === "all" ? "active" : ""} onClick={() => setExpenseScope("all")}>
+            הכל
+          </button>
+          <button type="button" className={expenseScope === "fixed" ? "active" : ""} onClick={() => setExpenseScope("fixed")}>
+            קבועות
+          </button>
+          <button type="button" className={expenseScope === "variable" ? "active" : ""} onClick={() => setExpenseScope("variable")}>
+            חד פעמי
+          </button>
+        </div>
+        <span className="period-hint">{expenseScopeLabel(expenseScope)}</span>
       </div>
 
       {categoryFilter && (
@@ -770,14 +883,16 @@ export function MonthlyView({
             {categoryFilter && <span className="filter-tag"> · {categoryLabel(categoryFilter)}</span>}
             {cardFilter && <span className="filter-tag"> · כרטיס {cardFilter}</span>}
             {hasActiveSearch && <span className="filter-tag"> · "{visibleSearchQuery}"</span>}
+            {expenseScope !== "all" && <span className="filter-tag"> · {expenseScopeLabel(expenseScope)}</span>}
           </h2>
-          {(categoryFilter || cardFilter || hasActiveSearch) && (
+          {(categoryFilter || cardFilter || hasActiveSearch || expenseScope !== "all") && (
             <button
               className="table-toggle"
               onClick={() => {
                 setCategoryFilter(null);
                 setCardFilter("");
                 setSearchQuery("");
+                setExpenseScope("all");
               }}
             >
               ניקוי סינון ✕
@@ -786,6 +901,13 @@ export function MonthlyView({
         </div>
         <div className="table-wrap">
           <table className="tx-table">
+            <colgroup>
+              <col className="tx-col-date" />
+              <col className="tx-col-merchant" />
+              <col className="tx-col-category" />
+              <col className="tx-col-source" />
+              <col className="tx-col-amount" />
+            </colgroup>
             <thead>
               <tr>
                 <th>תאריך</th>
@@ -797,13 +919,24 @@ export function MonthlyView({
             </thead>
             <tbody>
               {listed.map((tx) => {
-                const debitDetails = tx.detailTransactions?.length ? tx.detailTransactions : fallbackDebitDetails.get(tx.id) ?? [];
+                const allDebitDetails = tx.detailTransactions?.length ? tx.detailTransactions : fallbackDebitDetails.get(tx.id) ?? [];
+                const debitDetails = allDebitDetails.filter((detail) => {
+                  if (categoryFilter && effectiveCategoryMain(detail) !== categoryFilter) return false;
+                  if (!isInExpenseScope(detail, expenseScope, fixedExpenseKeys)) return false;
+                  if (cardFilter && !matchesCardFilter(detail, cardFilter)) return false;
+                  if (normalizedSearchQuery && !detailSelfMatchesSearch(detail, normalizedSearchQuery, effectiveCategoryMain(detail))) {
+                    return false;
+                  }
+                  return true;
+                });
                 const singleDebitDetail = isCardDebit(tx) && debitDetails.length === 1 ? debitDetails[0] : null;
                 const displayTx = singleDebitDetail ?? tx;
                 const displayCategoryMain = effectiveCategoryMain(displayTx);
                 const categoryMainLabel = categoryLabel(displayCategoryMain);
                 const categorySubLabel = displaySubLabel(displayTx.categorySub);
                 const isCategoryExcluded = excludedCategories.has(displayCategoryMain);
+                const canToggleTransaction = !isCardDebit(tx) || Boolean(singleDebitDetail);
+                const isTransactionExcluded = canToggleTransaction && excludedTransactionIds.has(displayTx.id);
                 const displayDate = new Date(`${tx.date}T00:00:00`).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
                 const canExpandDebit = isCardDebit(tx) && debitDetails.length > 1;
                 const isExpandedBySearch = canExpandDebit && detailMatchesSearch(debitDetails, normalizedSearchQuery, effectiveCategoryMain);
@@ -811,12 +944,12 @@ export function MonthlyView({
                 const toggleDebitDetails = () => setExpandedDebitId(isExpanded ? null : tx.id);
                 const cardSummary =
                   isCardDebit(tx) || displayTx.source === "card" ? cardDigitsSummary(displayTx, debitDetails) : null;
-                const sourceLabel = cardSummary ?? (tx.source === "card" ? "אשראי" : "בנק");
+                const sourceLabel = cardSummary ?? (tx.source === "card" ? "אשראי" : "");
                 const sourceClass = cardSummary ? "card-digits" : tx.source === "card" ? "card" : "bank";
                 return (
                 <Fragment key={tx.id}>
                 <tr
-                  className={`${isCardDebit(tx) ? "aggregate-row" : ""} ${canExpandDebit ? "expandable-row" : ""} ${transactionHighlightClass(tx, highAmountThreshold)}`.trim()}
+                  className={`${isCardDebit(tx) ? "aggregate-row" : ""} ${canExpandDebit ? "expandable-row" : ""} ${isTransactionExcluded ? "excluded-transaction" : ""} ${transactionHighlightClass(tx, highAmountThreshold)}`.trim()}
                   onClick={
                     canExpandDebit
                       ? (event) => {
@@ -838,7 +971,23 @@ export function MonthlyView({
                   }
                 >
                   <td>{highlightSearchText(displayDate, visibleSearchQuery)}</td>
-                  <td>
+                  <td className="merchant-cell">
+                    <span className="merchant-inline">
+                    {canToggleTransaction && (
+                      <button
+                        type="button"
+                        className={`category-power transaction-power row-transaction-power ${isTransactionExcluded ? "excluded" : ""}`}
+                        title={isTransactionExcluded ? "החזרת התנועה לחישוב" : "הוצאת התנועה מהחישוב"}
+                        aria-label={isTransactionExcluded ? "החזרת התנועה לחישוב" : "הוצאת התנועה מהחישוב"}
+                        aria-pressed={!isTransactionExcluded}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleTransactionInCalculation(displayTx.id);
+                        }}
+                      >
+                        <PowerIcon />
+                      </button>
+                    )}
                     {canExpandDebit && (
                       <button
                         type="button"
@@ -853,19 +1002,22 @@ export function MonthlyView({
                         {isExpanded ? "▾" : "▸"}
                       </button>
                     )}
-                    {highlightSearchText(displayTx.merchant, visibleSearchQuery)}
+                    <span className="merchant-text">{highlightSearchText(displayTx.merchant, visibleSearchQuery)}
                     {singleDebitDetail && <span className="sub-label"> · עסקת אשראי יחידה</span>}
                     {canExpandDebit && <span className="sub-label"> · {debitDetails.length} עסקאות בכרטיס</span>}
                     {installmentText(displayTx) && <span className="sub-label"> · {installmentText(displayTx)}</span>}
                     {displayTx.recurring && <span className="recurring-tag"> · מנוי / קבוע</span>}
                     {isCardDebit(tx) && !singleDebitDetail && <span className="sub-label"> (מפורט בשורות האשראי)</span>}
+                      </span>
+                    </span>
                   </td>
                   <td>
-                    <span className="cat-cell">
+                      <span className="cat-cell">
                       <span className="cat-current">
                         <button
                           type="button"
-                          className={`category-power ${isCategoryExcluded ? "excluded" : ""}`}
+                          style={{ display: categoryFilter ? "none" : undefined }}
+                          className={`category-power row-category-power ${isCategoryExcluded ? "excluded" : ""}`}
                           title={isCategoryExcluded ? `החזרת ${categoryMainLabel} לחישוב` : `הוצאת ${categoryMainLabel} מהחישוב`}
                           aria-label={isCategoryExcluded ? `החזרת ${categoryMainLabel} לחישוב` : `הוצאת ${categoryMainLabel} מהחישוב`}
                           aria-pressed={!isCategoryExcluded}
@@ -892,15 +1044,16 @@ export function MonthlyView({
                       {displayTx.type !== "income" && isConsumption(displayTx) && (
                         <button
                           type="button"
-                          className={`legend-state-action ${oneTimeExpenses.has(oneTimeKey(displayTx)) ? "active" : ""}`}
+                          className={`legend-state-action one-time-action ${oneTimeExpenses.has(oneTimeKey(displayTx)) ? "active" : ""}`}
                           onClick={(event) => {
                             event.stopPropagation();
                             toggleOneTime(displayTx);
                           }}
                           aria-pressed={oneTimeExpenses.has(oneTimeKey(displayTx))}
                           title="סימון העסקה כחד פעמית"
+                          aria-label="סימון העסקה כחד פעמית"
                         >
-                          חד פעמי
+                          <OneTimeIcon />
                         </button>
                       )}
                       {(!isCardDebit(tx) || singleDebitDetail) && (
@@ -913,7 +1066,7 @@ export function MonthlyView({
                     </span>
                   </td>
                   <td className="source-cell">
-                    <span className={`source-chip ${sourceClass}`}>{highlightSearchText(sourceLabel, visibleSearchQuery)}</span>
+                    {sourceLabel && <span className={`source-chip ${sourceClass}`}>{highlightSearchText(sourceLabel, visibleSearchQuery)}</span>}
                     {isPending(tx) && <span className="pending-chip">⏳ טרם חויב</span>}
                   </td>
                   <td className={`num ${tx.type === "income" ? "net-positive" : ""}`}>
@@ -933,23 +1086,40 @@ export function MonthlyView({
                           const detailCategoryMain = effectiveCategoryMain(detail);
                           const detailCategoryMainLabel = categoryLabel(detailCategoryMain);
                           const isDetailCategoryExcluded = excludedCategories.has(detailCategoryMain);
+                          const isDetailTransactionExcluded = excludedTransactionIds.has(detail.id);
                           const detailCard = cardDigitsText(detail);
                           const detailSubLabel = displaySubLabel(detail.categorySub);
                           const detailAmount = formatILS(detail.amount);
                           return (
-                            <li key={detail.id} className="debit-detail-item">
+                            <li key={detail.id} className={`debit-detail-item ${isDetailTransactionExcluded ? "excluded-transaction" : ""}`}>
                               <span className="debit-detail-date">
                                 {highlightSearchText(detailDate, visibleSearchQuery)}
                                 {detailCard && (
                                   <span className="debit-detail-card">{highlightSearchText(detailCard, visibleSearchQuery)}</span>
                                 )}
                               </span>
-                              <span className="debit-detail-merchant">{highlightSearchText(detail.merchant, visibleSearchQuery)}</span>
+                              <span className="debit-detail-merchant">
+                                <button
+                                  type="button"
+                                  className={`category-power transaction-power row-transaction-power ${isDetailTransactionExcluded ? "excluded" : ""}`}
+                                  title={isDetailTransactionExcluded ? "החזרת התנועה לחישוב" : "הוצאת התנועה מהחישוב"}
+                                  aria-label={isDetailTransactionExcluded ? "החזרת התנועה לחישוב" : "הוצאת התנועה מהחישוב"}
+                                  aria-pressed={!isDetailTransactionExcluded}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    toggleTransactionInCalculation(detail.id);
+                                  }}
+                                >
+                                  <PowerIcon />
+                                </button>
+                                <span className="debit-detail-merchant-text">{highlightSearchText(detail.merchant, visibleSearchQuery)}</span>
+                              </span>
                               <span className="debit-detail-category">
                                 <span className="cat-current compact">
                                   <button
                                     type="button"
-                                    className={`category-power ${isDetailCategoryExcluded ? "excluded" : ""}`}
+                                    style={{ display: categoryFilter ? "none" : undefined }}
+                                    className={`category-power row-category-power ${isDetailCategoryExcluded ? "excluded" : ""}`}
                                     title={isDetailCategoryExcluded ? `החזרת ${detailCategoryMainLabel} לחישוב` : `הוצאת ${detailCategoryMainLabel} מהחישוב`}
                                     aria-label={isDetailCategoryExcluded ? `החזרת ${detailCategoryMainLabel} לחישוב` : `הוצאת ${detailCategoryMainLabel} מהחישוב`}
                                     aria-pressed={!isDetailCategoryExcluded}
@@ -981,15 +1151,16 @@ export function MonthlyView({
                                 {detail.type !== "income" && isConsumption(detail) && (
                                   <button
                                     type="button"
-                                    className={`legend-state-action ${oneTimeExpenses.has(oneTimeKey(detail)) ? "active" : ""}`}
+                                    className={`legend-state-action one-time-action ${oneTimeExpenses.has(oneTimeKey(detail)) ? "active" : ""}`}
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       toggleOneTime(detail);
                                     }}
                                     aria-pressed={oneTimeExpenses.has(oneTimeKey(detail))}
                                     title="סימון העסקה כחד פעמית"
+                                    aria-label="סימון העסקה כחד פעמית"
                                   >
-                                    חד פעמי
+                                    <OneTimeIcon />
                                   </button>
                                 )}
                                 <MonthlyCategoryPicker

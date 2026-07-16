@@ -1,14 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { isCardDebit, isConsumption, isSavings } from "../logic/flows";
-import { analyzeBudgetWithAI, type AIAnalysisResult } from "../api/preferences";
+import { categoryLabel } from "../logic/categoryOverrides";
+import { analyzeBudgetWithAI, type AIAnalysisResult, type BudgetPreferences } from "../api/preferences";
 import { formatILSWhole, todayIso } from "./format";
 
 interface Props {
   transactions: Transaction[];
   periods: Period[];
   bankBalance: { balance: number; date: string } | null;
+  preferences: BudgetPreferences;
 }
 
 const sum = (txs: Transaction[]) => txs.reduce((total, tx) => total + tx.amount, 0);
@@ -68,12 +70,15 @@ function netSavings(txs: Transaction[]) {
   );
 }
 
-export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
+export function AIAnalysisView({ transactions, periods, bankBalance, preferences }: Props) {
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("month");
   const [periodKey, setPeriodKey] = useState<string | null>(null);
   const [trendCount, setTrendCount] = useState("6");
+  const [categoryKey, setCategoryKey] = useState("");
   const [result, setResult] = useState<AIAnalysisResult | null>(null);
+  const [cacheInfo, setCacheInfo] = useState<{ cached: boolean; updatedAt: string } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [cacheLoading, setCacheLoading] = useState(false);
   const [error, setError] = useState("");
 
   const selectedPeriod = useMemo(() => {
@@ -94,7 +99,18 @@ export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
     : trendPeriods.reduce((sumDays, period) => sumDays + daysInclusive(period.from, period.to), 0);
   const monthEquivalent = periodDays > 0 ? periodDays / 30 : periodCount;
   const isPartialSinglePeriod = analysisMode === "month" && periodDays > 0 && periodDays < 24;
-  const analysisLabel =
+  const userProfile = useMemo(
+    () => ({
+      householdAge: preferences.householdAge,
+      householdSize: preferences.householdSize,
+    }),
+    [preferences.householdAge, preferences.householdSize]
+  );
+  const userProfileHints = [
+    userProfile.householdAge ? `גיל ${userProfile.householdAge}` : "",
+    userProfile.householdSize ? `${userProfile.householdSize} נפשות` : "",
+  ].filter(Boolean);
+  const baseAnalysisLabel =
     analysisMode === "month"
       ? selectedPeriod?.label ?? ""
       : `מגמות ${trendPeriods.length} תקופות (${trendFrom} עד ${trendTo})`;
@@ -108,7 +124,7 @@ export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
   const isChargedCardTx = (tx: Transaction) =>
     tx.source !== "card" || Boolean(lastDebitDate && (tx.billingDate ?? tx.date) <= lastDebitDate);
 
-  const periodTransactions = useMemo(
+  const periodBaseTransactions = useMemo(
     () =>
       transactions.filter((tx) => {
         if (!isChargedCardTx(tx)) return false;
@@ -121,6 +137,34 @@ export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
       }),
     [analysisMode, lastDebitDate, selectedPeriod, transactions, trendFrom, trendTo]
   );
+  const categoryOptions = useMemo(() => {
+    const totals = new Map<string, number>();
+    const counts = new Map<string, number>();
+    for (const tx of periodBaseTransactions) {
+      const key = tx.categoryMain || "OTHER";
+      totals.set(key, (totals.get(key) ?? 0) + Math.abs(tx.amount));
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...totals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([key, total]) => ({ key, label: categoryLabel(key), total, count: counts.get(key) ?? 0 }));
+  }, [periodBaseTransactions]);
+  useEffect(() => {
+    if (categoryKey && !categoryOptions.some((category) => category.key === categoryKey)) {
+      setCategoryKey("");
+      setResult(null);
+      setCacheInfo(null);
+      setError("");
+    }
+  }, [categoryKey, categoryOptions]);
+  const selectedCategoryLabel = categoryKey ? categoryLabel(categoryKey) : "";
+  const periodTransactions = useMemo(
+    () => (categoryKey ? periodBaseTransactions.filter((tx) => tx.categoryMain === categoryKey) : periodBaseTransactions),
+    [categoryKey, periodBaseTransactions]
+  );
+  const analysisLabel = categoryKey
+    ? `${baseAnalysisLabel} · קטגוריה: ${selectedCategoryLabel}`
+    : baseAnalysisLabel;
 
   const expenses = useMemo(() => budgetExpenses(periodTransactions), [periodTransactions]);
   const incomes = useMemo(() => budgetIncome(periodTransactions), [periodTransactions]);
@@ -178,6 +222,14 @@ export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
     return {
       periodLabel: analysisLabel,
       analysisMode,
+      categoryFocus: categoryKey
+        ? {
+            categoryMain: categoryKey,
+            label: selectedCategoryLabel,
+            filteredAnalysis: true,
+          }
+        : null,
+      userProfile,
       periodCount,
       period: {
         from: analysisMode === "month" ? selectedPeriod?.from : trendFrom,
@@ -254,21 +306,69 @@ export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
       topConsumptionMerchants: topRows(merchantTotals, 18),
       savingsAndInvestmentCategories: topRows(savingsCategoryTotals, 8),
     };
-  }, [analysisLabel, analysisMode, expenses, incomes, isPartialSinglePeriod, monthEquivalent, periodCount, periodDays, periodTransactions, savingsTotal, selectedPeriod, trendFrom, trendTo]);
+  }, [analysisLabel, analysisMode, categoryKey, expenses, incomes, isPartialSinglePeriod, monthEquivalent, periodCount, periodDays, periodTransactions, savingsTotal, selectedCategoryLabel, selectedPeriod, trendFrom, trendTo, userProfile]);
 
-  const runAnalysis = () => {
-    if (!analysisLabel) return;
-    setLoading(true);
-    setError("");
+  const resetAnalysis = () => {
     setResult(null);
-    analyzeBudgetWithAI({
+    setCacheInfo(null);
+    setError("");
+  };
+
+  const analysisPayload = useMemo(
+    () => ({
       analysisMode,
       periodLabel: analysisLabel,
       transactions: periodTransactions,
       analytics,
+      userProfile,
       bankBalance,
-    })
-      .then(setResult)
+    }),
+    [analysisLabel, analysisMode, analytics, bankBalance, periodTransactions, userProfile]
+  );
+
+  useEffect(() => {
+    if (!analysisLabel) return;
+    let cancelled = false;
+    setCacheLoading(true);
+    setError("");
+    analyzeBudgetWithAI({ ...analysisPayload, cacheOnly: true })
+      .then((response) => {
+        if (cancelled) return;
+        if (response.result) {
+          setResult(response.result);
+          setCacheInfo({ cached: true, updatedAt: response.updatedAt ?? "" });
+        } else {
+          setResult(null);
+          setCacheInfo(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message === "AI_API_KEY_REQUIRED" ? "חסר מפתח AI בהגדרות השירותים" : message);
+      })
+      .finally(() => {
+        if (!cancelled) setCacheLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [analysisLabel, analysisPayload]);
+
+  const runAnalysis = (forceRefresh = false) => {
+    if (!analysisLabel) return;
+    setLoading(true);
+    setError("");
+    if (forceRefresh) {
+      setResult(null);
+      setCacheInfo(null);
+    }
+    analyzeBudgetWithAI({ ...analysisPayload, forceRefresh })
+      .then((response) => {
+        if (!response.result) return;
+        setResult(response.result);
+        setCacheInfo({ cached: response.cached, updatedAt: response.updatedAt ?? new Date().toISOString() });
+      })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         setError(message === "AI_API_KEY_REQUIRED" ? "חסר מפתח AI בהגדרות השירותים" : message);
@@ -289,8 +389,7 @@ export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
           value={analysisMode}
           onChange={(event) => {
             setAnalysisMode(event.target.value as AnalysisMode);
-            setResult(null);
-            setError("");
+            resetAnalysis();
           }}
         >
           <option value="month">חודש מסוים</option>
@@ -304,8 +403,7 @@ export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
               value={selectedPeriod?.key ?? ""}
               onChange={(event) => {
                 setPeriodKey(event.target.value);
-                setResult(null);
-                setError("");
+                resetAnalysis();
               }}
             >
               {periods.map((period) => (
@@ -323,8 +421,7 @@ export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
               value={trendCount}
               onChange={(event) => {
                 setTrendCount(event.target.value);
-                setResult(null);
-                setError("");
+                resetAnalysis();
               }}
             >
               <option value="3">3 תקופות אחרונות</option>
@@ -333,9 +430,32 @@ export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
             </select>
           </>
         )}
-        <button className="table-toggle primary-action" type="button" onClick={runAnalysis} disabled={loading}>
-          {loading ? "מנתח..." : "הרצת ניתוח AI"}
-        </button>
+        <label htmlFor="ai-category-select">קטגוריה:</label>
+        <select
+          id="ai-category-select"
+          value={categoryKey}
+          onChange={(event) => {
+            setCategoryKey(event.target.value);
+            resetAnalysis();
+          }}
+        >
+          <option value="">כל הקטגוריות</option>
+          {categoryOptions.map((category) => (
+            <option key={category.key} value={category.key}>
+              {category.label}
+            </option>
+          ))}
+        </select>
+        {!result && (
+          <button className="table-toggle primary-action" type="button" onClick={() => runAnalysis(false)} disabled={loading || cacheLoading}>
+            {loading ? "מנתח..." : cacheLoading ? "בודק ניתוח שמור..." : "הרצת ניתוח AI"}
+          </button>
+        )}
+        {result && (
+          <button className="table-toggle" type="button" onClick={() => runAnalysis(true)} disabled={loading}>
+            רענון ניתוח
+          </button>
+        )}
       </div>
 
       <div className="stat-tiles ai-stat-tiles">
@@ -361,6 +481,11 @@ export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
         </div>
       </div>
 
+      <div className="ai-profile-context">
+        <span className="stat-label">פרופיל שנשלח ל-AI</span>
+        <strong>{userProfileHints.length > 0 ? userProfileHints.join(" · ") : "לא הוגדר"}</strong>
+      </div>
+
       {error && <div className="error-box">שגיאת AI: {error}</div>}
 
       {result ? (
@@ -368,10 +493,16 @@ export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
           <div className="ai-score-card">
             <span className="stat-label">ציון תקציבי</span>
             <strong>{Math.round(result.score)}</strong>
-            <span>/100</span>
           </div>
           <div className="ai-summary">
             <h2>ניתוח AI</h2>
+            {cacheInfo && (
+              <span className="ai-cache-status">
+                {cacheInfo.cached ? "ניתוח שמור מה-DB" : "ניתוח חדש נשמר ב-DB"}
+                {" · "}
+                {new Date(cacheInfo.updatedAt).toLocaleString("he-IL")}
+              </span>
+            )}
             <p>{result.summary}</p>
           </div>
           <AIList title="חוזקות" items={result.strengths} />
@@ -381,7 +512,7 @@ export function AIAnalysisView({ transactions, periods, bankBalance }: Props) {
       ) : (
         <section className="ai-analysis-panel empty-ai-panel">
           <h2>ניתוח AI</h2>
-          <p>בחר תקופה והריץ ניתוח כדי לקבל ציון, נקודות סיכון והמלצות פעולה.</p>
+          <p>{cacheLoading ? "בודק אם קיים ניתוח שמור ב-DB..." : "לא נמצא ניתוח שמור לתקופה ולנתונים הנוכחיים. הרץ ניתוח כדי לקבל ציון, נקודות סיכון והמלצות פעולה."}</p>
         </section>
       )}
     </div>

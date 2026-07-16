@@ -10,6 +10,9 @@ export interface BudgetPreferences {
   oneTimeExpenses: string[];
   fixedExpenses: string[];
   highAmountThreshold: number;
+  householdBirthDate: string | null;
+  householdAge: number | null;
+  householdSize: number | null;
   theme: "light" | "dark";
 }
 
@@ -28,6 +31,9 @@ export const emptyPreferences: BudgetPreferences = {
   oneTimeExpenses: [],
   fixedExpenses: [],
   highAmountThreshold: 5000,
+  householdBirthDate: null,
+  householdAge: null,
+  householdSize: null,
   theme: "light",
 };
 
@@ -127,13 +133,25 @@ export interface AIAnalysisResult {
   recommendations: string[];
 }
 
+export interface AIAnalysisResponse {
+  result: AIAnalysisResult | null;
+  cached: boolean;
+  updatedAt: string | null;
+}
+
 export function analyzeBudgetWithAI(payload: {
   analysisMode: "month" | "trend";
   periodLabel: string;
   transactions: unknown[];
   analytics?: unknown;
+  userProfile?: {
+    householdAge: number | null;
+    householdSize: number | null;
+  };
   bankBalance: { balance: number; date: string } | null;
-}): Promise<AIAnalysisResult> {
+  forceRefresh?: boolean;
+  cacheOnly?: boolean;
+}): Promise<AIAnalysisResponse> {
   return apiJson("/api/ai-analysis", {
     method: "POST",
     body: JSON.stringify(payload),

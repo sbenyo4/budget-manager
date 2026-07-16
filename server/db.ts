@@ -12,6 +12,9 @@ export interface BudgetPreferences {
   oneTimeExpenses: string[];
   fixedExpenses: string[];
   highAmountThreshold: number;
+  householdBirthDate: string | null;
+  householdAge: number | null;
+  householdSize: number | null;
   theme: "light" | "dark";
 }
 
@@ -25,11 +28,19 @@ export interface ServiceSettings {
   aiModel: string;
 }
 
+export interface AIAnalysisCacheRecord<T = unknown> {
+  data: T;
+  updatedAt: string;
+}
+
 export const PREFS_DEFAULT: BudgetPreferences = {
   sectionOverrides: {},
   oneTimeExpenses: [],
   fixedExpenses: [],
   highAmountThreshold: 5000,
+  householdBirthDate: null,
+  householdAge: null,
+  householdSize: null,
   theme: "light",
 };
 
@@ -93,6 +104,15 @@ export function ensureSchema(): Promise<void> {
         salt TEXT NOT NULL,
         pin_hash TEXT NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+      `,
+      db`
+        CREATE TABLE IF NOT EXISTS ai_analysis_cache (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        cache_key TEXT NOT NULL,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (user_id, cache_key)
       )
       `,
     ]).then(() => undefined);
@@ -180,6 +200,43 @@ export async function upsertServiceSettings(userId: string, settings: ServiceSet
       data = EXCLUDED.data,
       updated_at = NOW()
   `;
+}
+
+export async function getAIAnalysisCache<T = unknown>(
+  userId: string,
+  cacheKey: string
+): Promise<AIAnalysisCacheRecord<T> | null> {
+  await ensureSchema();
+  const rows = (await sql()`
+    SELECT data, updated_at AS "updatedAt"
+    FROM ai_analysis_cache
+    WHERE user_id = ${userId} AND cache_key = ${cacheKey}
+    LIMIT 1
+  `) as Array<{ data: T; updatedAt: Date | string }>;
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    data: row.data,
+    updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
+  };
+}
+
+export async function upsertAIAnalysisCache<T = unknown>(
+  userId: string,
+  cacheKey: string,
+  data: T
+): Promise<string> {
+  await ensureSchema();
+  const rows = (await sql()`
+    INSERT INTO ai_analysis_cache (user_id, cache_key, data, updated_at)
+    VALUES (${userId}, ${cacheKey}, ${JSON.stringify(data)}::jsonb, NOW())
+    ON CONFLICT (user_id, cache_key) DO UPDATE SET
+      data = EXCLUDED.data,
+      updated_at = NOW()
+    RETURNING updated_at AS "updatedAt"
+  `) as Array<{ updatedAt: Date | string }>;
+  const updatedAt = rows[0]?.updatedAt;
+  return updatedAt instanceof Date ? updatedAt.toISOString() : String(updatedAt ?? new Date().toISOString());
 }
 
 export async function getPinCredential(userId: string): Promise<{ salt: string; pinHash: string } | null> {

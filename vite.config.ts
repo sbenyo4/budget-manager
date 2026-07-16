@@ -6,7 +6,7 @@ import { createHash, createPublicKey, randomBytes, verify as verifySignature } f
 import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { analyzeBudget, type AIAnalysisPayload } from "./server/aiAnalysis";
+import { analyzeBudget, type AIAnalysisPayload, type AIAnalysisResult } from "./server/aiAnalysis";
 import { listAIModels } from "./server/aiModels";
 
 /**
@@ -21,11 +21,15 @@ import { listAIModels } from "./server/aiModels";
 
 const TOKEN_URL = "https://api.open-finance.ai/oauth/token";
 const SESSION_COOKIE = "budget_session";
+const AI_ANALYSIS_CACHE_VERSION = "ai-analysis-cache-v2";
 const PREFS_DEFAULT = {
   sectionOverrides: {},
   oneTimeExpenses: [],
   fixedExpenses: [],
   highAmountThreshold: 5000,
+  householdBirthDate: null as string | null,
+  householdAge: null as number | null,
+  householdSize: null as number | null,
   theme: "light" as "light" | "dark",
 };
 const require = createRequire(import.meta.url);
@@ -138,13 +142,50 @@ function normalizeServiceSettings(body: Partial<ServiceSettings>): ServiceSettin
 
 function normalizeBudgetPreferences(body: Partial<typeof PREFS_DEFAULT>) {
   const threshold = Number(body.highAmountThreshold);
+  const householdAge = Number(body.householdAge);
+  const householdSize = Number(body.householdSize);
+  const householdBirthDate =
+    typeof body.householdBirthDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.householdBirthDate)
+      ? body.householdBirthDate
+      : null;
   return {
     sectionOverrides: body.sectionOverrides && typeof body.sectionOverrides === "object" ? body.sectionOverrides : {},
     oneTimeExpenses: Array.isArray(body.oneTimeExpenses) ? body.oneTimeExpenses : [],
     fixedExpenses: Array.isArray(body.fixedExpenses) ? body.fixedExpenses : [],
     highAmountThreshold: Number.isFinite(threshold) && threshold >= 0 ? threshold : PREFS_DEFAULT.highAmountThreshold,
+    householdBirthDate,
+    householdAge: Number.isFinite(householdAge) && householdAge > 0 ? householdAge : null,
+    householdSize: Number.isFinite(householdSize) && householdSize > 0 ? householdSize : null,
     theme: body.theme === "dark" ? "dark" : "light",
   };
+}
+
+interface AIAnalysisRequest extends AIAnalysisPayload {
+  forceRefresh?: boolean;
+  cacheOnly?: boolean;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`;
+}
+
+function aiAnalysisCacheKey(settings: ServiceSettings, payload: AIAnalysisPayload): string {
+  return createHash("sha256")
+    .update(
+      stableStringify({
+        version: AI_ANALYSIS_CACHE_VERSION,
+        aiProvider: settings.aiProvider,
+        aiModel: settings.aiModel,
+        payload,
+      })
+    )
+    .digest("hex");
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown) {
@@ -275,6 +316,13 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       pin_hash TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS ai_analysis_cache (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      cache_key TEXT NOT NULL,
+      data TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, cache_key)
+    );
   `);
 
   const getUserBySession = db.prepare(`
@@ -314,6 +362,15 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       salt = excluded.salt,
       pin_hash = excluded.pin_hash,
       updated_at = CURRENT_TIMESTAMP
+  `);
+  const getAIAnalysisCache = db.prepare("SELECT data, updated_at AS updatedAt FROM ai_analysis_cache WHERE user_id = ? AND cache_key = ?");
+  const upsertAIAnalysisCache = db.prepare(`
+    INSERT INTO ai_analysis_cache (user_id, cache_key, data, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id, cache_key) DO UPDATE SET
+      data = excluded.data,
+      updated_at = CURRENT_TIMESTAMP
+    RETURNING updated_at AS updatedAt
   `);
 
   function pinHash(pin: string, salt: string): string {
@@ -438,7 +495,38 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       const row = getServiceSettings.get(user.id) as { data: string } | undefined;
       const settings = row ? normalizeServiceSettings(JSON.parse(row.data)) : EMPTY_SERVICE_SETTINGS;
       readBody(req)
-        .then((raw) => analyzeBudget(settings, JSON.parse(raw) as AIAnalysisPayload))
+        .then(async (raw) => {
+          const body = JSON.parse(raw) as AIAnalysisRequest;
+          const { forceRefresh, cacheOnly, ...payload } = body;
+          const cacheKey = aiAnalysisCacheKey(settings, payload);
+
+          if (!forceRefresh) {
+            const cached = getAIAnalysisCache.get(user.id, cacheKey) as { data: string; updatedAt: string } | undefined;
+            if (cached) {
+              return {
+                result: JSON.parse(cached.data) as AIAnalysisResult,
+                cached: true,
+                updatedAt: cached.updatedAt,
+              };
+            }
+          }
+
+          if (cacheOnly) {
+            return {
+              result: null,
+              cached: false,
+              updatedAt: null,
+            };
+          }
+
+          const result = await analyzeBudget(settings, payload);
+          const saved = upsertAIAnalysisCache.get(user.id, cacheKey, JSON.stringify(result)) as { updatedAt: string } | undefined;
+          return {
+            result,
+            cached: false,
+            updatedAt: saved?.updatedAt ?? new Date().toISOString(),
+          };
+        })
         .then((analysis) => sendJson(res, 200, analysis))
         .catch((err: unknown) => sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) }));
       return;

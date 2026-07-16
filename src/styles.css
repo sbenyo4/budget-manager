@@ -920,11 +920,16 @@ h1 {
   width: min(100%, 520px);
   max-height: min(720px, calc(100vh - 36px));
   overflow: auto;
+  direction: ltr;
   background: var(--surface-1);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 18px;
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+}
+
+.settings-modal > * {
+  direction: rtl;
 }
 
 .settings-header {
@@ -1066,6 +1071,8 @@ h1 {
 
 .tx-table {
   width: 100%;
+  min-width: 1040px;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.9rem;
 }
@@ -1129,6 +1136,71 @@ h1 {
   font-variant-numeric: tabular-nums;
 }
 
+.tx-col-date {
+  width: 6%;
+}
+
+.tx-col-merchant {
+  width: 33%;
+}
+
+.tx-col-category {
+  width: 43%;
+}
+
+.tx-col-source {
+  width: 7%;
+}
+
+.tx-col-amount {
+  width: 11%;
+}
+
+.tx-table td.merchant-cell {
+  min-width: 0;
+}
+
+.tx-table th:nth-child(4),
+.tx-table td.source-cell {
+  text-align: center;
+}
+
+.tx-table th:nth-child(2),
+.tx-table td:nth-child(2),
+.tx-table th:nth-child(3),
+.tx-table td:nth-child(3) {
+  padding-inline: 10px;
+}
+
+.tx-table th:nth-child(4),
+.tx-table td:nth-child(4) {
+  padding-inline: 6px;
+}
+
+.merchant-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+  line-height: 1.25;
+}
+
+.merchant-text {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.merchant-text .sub-label,
+.merchant-text .recurring-tag {
+  white-space: nowrap;
+}
+
 .reason-cell {
   color: var(--text-secondary);
   font-size: 0.85rem;
@@ -1155,6 +1227,14 @@ h1 {
 
 .period-row .card-select {
   min-width: 150px;
+}
+
+.search-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 330px;
+  min-width: min(100%, 330px);
 }
 
 .monthly-search,
@@ -1697,18 +1777,21 @@ h1 {
 
 .cat-cell {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) 82px 170px;
+  grid-template-columns: minmax(0, 1fr) 30px minmax(124px, 150px);
   align-items: center;
   gap: 8px;
-  width: min(100%, 470px);
+  width: 100%;
+  min-width: 0;
 }
 
 .cat-current {
+  grid-column: 1;
   display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 7px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .cat-current.compact {
@@ -1719,6 +1802,8 @@ h1 {
   display: inline-flex;
   align-items: center;
   min-width: 0;
+  flex: 0 0 auto;
+  max-width: 100%;
   gap: 6px;
   border: 0;
   background: transparent;
@@ -1737,6 +1822,10 @@ h1 {
 
 .category-filter-action .cat-main-label {
   text-align: start;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .category-power {
@@ -1767,16 +1856,124 @@ h1 {
   opacity: 0.62;
 }
 
+.transaction-power {
+  color: var(--avoid);
+}
+
+.row-transaction-power {
+  width: 18px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+  vertical-align: middle;
+}
+
+.row-transaction-power .power-icon {
+  position: static;
+  transform: none;
+  width: 15px;
+  height: 15px;
+}
+
+.row-transaction-power:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
+.row-transaction-power.excluded {
+  background: transparent;
+  opacity: 0.62;
+}
+
+.row-category-power {
+  width: 18px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+  vertical-align: middle;
+}
+
+.row-category-power .power-icon {
+  position: static;
+  transform: none;
+  width: 15px;
+  height: 15px;
+}
+
+.row-category-power:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
+.row-category-power.excluded {
+  background: transparent;
+  opacity: 0.62;
+}
+
+.excluded-transaction {
+  opacity: 0.58;
+}
+
+.excluded-transaction .debit-detail-amount,
+.excluded-transaction > td:last-child {
+  text-decoration: line-through;
+}
+
 .cat-main-label {
-  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.cat-current .sub-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cat-cell .legend-state-action {
-  width: 82px;
+  grid-column: 2;
+  width: 30px;
+  height: 30px;
+  padding: 0;
   justify-self: stretch;
 }
 
+.one-time-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+
+.one-time-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .monthly-category-picker {
+  grid-column: 3;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
@@ -1824,9 +2021,9 @@ h1 {
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  min-width: 74px;
-  min-height: 30px;
-  padding: 4px 10px;
+  min-width: 48px;
+  min-height: 28px;
+  padding: 3px 7px;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface-1);
@@ -1843,7 +2040,7 @@ h1 {
 }
 
 .source-chip.card-digits {
-  min-width: 92px;
+  min-width: 48px;
   color: var(--text-secondary);
 }
 
@@ -1932,11 +2129,20 @@ h1 {
 }
 
 .debit-detail-merchant {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-primary);
   font-weight: 550;
   overflow: hidden;
+  min-width: 0;
+}
+
+.debit-detail-merchant-text {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .debit-detail-category {
@@ -1958,6 +2164,12 @@ h1 {
 .debit-detail-actions .legend-state-action {
   width: 86px;
   padding-inline: 8px;
+}
+
+.debit-detail-actions .one-time-action {
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
 }
 
 .debit-detail-actions .monthly-category-picker {
@@ -2113,6 +2325,25 @@ h1 {
   margin-bottom: 0;
 }
 
+.ai-profile-context {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-1);
+  color: var(--text-secondary);
+}
+
+.ai-profile-context strong {
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
 .ai-analysis-panel {
   display: grid;
   grid-template-columns: 180px minmax(0, 1fr);
@@ -2150,6 +2381,13 @@ h1 {
 .ai-summary h2,
 .ai-list h3 {
   margin: 0 0 8px;
+}
+
+.ai-cache-status {
+  display: block;
+  margin: -2px 0 8px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
 }
 
 .ai-summary p {
