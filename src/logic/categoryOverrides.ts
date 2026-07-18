@@ -261,27 +261,39 @@ function isUsefulLearnedCategory(category: string): boolean {
   return Boolean(category) && category !== "OTHER" && category !== "INCOMES_EXPENSES";
 }
 
-function merchantsLookSimilar(a: string, b: string): boolean {
-  if (!a || !b) return false;
-  if (a === b) return true;
+function merchantSimilarityScore(a: string, b: string): number {
+  if (!a || !b) return 0;
+  if (a === b) return 100_000 + a.length;
 
   const compactA = a.replace(/\s+/g, "");
   const compactB = b.replace(/\s+/g, "");
-  if (
-    BRAND_MATCH_TOKENS.some((brand) => {
+  const brandScore = BRAND_MATCH_TOKENS.reduce((score, brand) => {
       const compactBrand = compactMerchantFingerprint(brand);
-      return compactA.includes(compactBrand) && compactB.includes(compactBrand);
-    })
-  ) {
-    return true;
-  }
+      return compactA.includes(compactBrand) && compactB.includes(compactBrand)
+        ? Math.max(score, 90_000 + compactBrand.length)
+        : score;
+    }, 0);
+  if (brandScore) return brandScore;
+
   if (compactA.length >= 5 && compactB.length >= 5 && (compactA.includes(compactB) || compactB.includes(compactA))) {
-    return true;
+    return 80_000 + Math.min(compactA.length, compactB.length);
   }
 
   const tokensA = new Set(meaningfulMerchantTokens(a));
   const tokensB = meaningfulMerchantTokens(b);
-  return tokensB.some((token) => tokensA.has(token));
+  return tokensB.reduce((score, token) => score + (tokensA.has(token) ? token.length * token.length : 0), 0);
+}
+
+function bestMerchantMatch<T extends { merchant: string }>(merchant: string, candidates: T[]): T | undefined {
+  return candidates
+    .map((candidate) => ({ candidate, score: merchantSimilarityScore(merchant, candidate.merchant) }))
+    .filter(({ score }) => score > 0)
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.candidate.merchant.length - a.candidate.merchant.length ||
+        a.candidate.merchant.localeCompare(b.candidate.merchant, "he")
+    )[0]?.candidate;
 }
 
 function learnedCategoryForMerchant(
@@ -289,7 +301,7 @@ function learnedCategoryForMerchant(
   learned: Array<{ merchant: string; category: string; recurring: boolean }>
 ): { category?: string; recurring?: boolean } {
   const normalized = merchantFingerprint(merchant);
-  const match = learned.find((candidate) => merchantsLookSimilar(normalized, candidate.merchant));
+  const match = bestMerchantMatch(normalized, learned);
   return match ? { category: match.category, recurring: match.recurring } : {};
 }
 
@@ -315,12 +327,7 @@ function savedCategoryForMerchant(
   if (exact) return exact;
 
   const normalized = merchantFingerprint(merchant);
-  for (const saved of savedOverrides) {
-    if (merchantsLookSimilar(normalized, saved.merchant)) {
-      return saved.category;
-    }
-  }
-  return undefined;
+  return bestMerchantMatch(normalized, savedOverrides)?.category;
 }
 
 function transactionAndDetails(tx: Transaction): Transaction[] {

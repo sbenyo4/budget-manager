@@ -1099,13 +1099,25 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
 
 export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  const devPlugins = command === "serve" ? [preferencesAuth(env), openFinanceProxy(env)] : [];
+  const remoteApiOrigin = env.BUDGET_API_ORIGIN?.replace(/\/$/, "");
+  const devPlugins = command === "serve" && !remoteApiOrigin ? [preferencesAuth(env), openFinanceProxy(env)] : [];
   return {
     plugins: [react(), ...devPlugins],
     server: {
       host: "localhost",
       port: 5175,
       strictPort: true,
+      ...(remoteApiOrigin
+        ? {
+            proxy: {
+              "/api": {
+                target: remoteApiOrigin,
+                changeOrigin: true,
+                secure: true,
+              },
+            },
+          }
+        : {}),
     },
   };
 });

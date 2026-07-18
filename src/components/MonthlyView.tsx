@@ -1259,7 +1259,9 @@ export function MonthlyView({
                     {canExpandDebit && <span className="sub-label"> · {debitDetails.length} עסקאות בכרטיס</span>}
                     {installmentText(displayTx) && <span className="sub-label"> · {installmentText(displayTx)}</span>}
                     {displayTx.recurring && <span className="recurring-tag"> · מנוי / קבוע</span>}
-                    {isCardDebit(tx) && !singleDebitDetail && <span className="sub-label"> (מפורט בשורות האשראי)</span>}
+                    {isCardDebit(tx) && allDebitDetails.length === 0 && (
+                      <span className="sub-label"> · לא נמצא פירוט תואם בדיווח חברת האשראי</span>
+                    )}
                       </span>
                     </span>
                   </td>
