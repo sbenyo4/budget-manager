@@ -1513,6 +1513,7 @@ function CategoryExpenseStatistics({
           className="weekly-expense-chart"
           role="img"
           aria-label={`הוצאות שבועיות, ממוצע ${formatILSWhole(averageWeek)}`}
+          style={{ gridTemplateColumns: `repeat(${weeklyBuckets.length}, minmax(0, 1fr))` }}
         >
           {weeklyBuckets.map((bucket) => {
             const height = bucket.total > 0 ? Math.max((bucket.total / maxWeeklyTotal) * 100, 3) : 0;
@@ -1543,6 +1544,7 @@ function CategoryExpenseStatistics({
           className="weekly-expense-chart weekly-count-chart"
           role="img"
           aria-label={`כמות עסקאות לפי שבוע, ממוצע ${averageWeeklyCount.toFixed(1)}`}
+          style={{ gridTemplateColumns: `repeat(${weeklyBuckets.length}, minmax(0, 1fr))` }}
         >
           {weeklyBuckets.map((bucket) => {
             const height = bucket.count > 0 ? Math.max((bucket.count / maxWeeklyCount) * 100, 3) : 0;

@@ -1939,7 +1939,9 @@ h1 {
 }
 
 .category-chart-section {
+  container-type: inline-size;
   min-width: 0;
+  overflow: hidden;
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1967,9 +1969,11 @@ h1 {
 
 .weekly-expense-chart {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
   align-items: end;
-  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  gap: clamp(2px, 1.2cqi, 8px);
   min-height: 240px;
   padding-top: 4px;
 }
@@ -1985,7 +1989,7 @@ h1 {
 
 .weekly-expense-column > strong {
   overflow: hidden;
-  font-size: 0.78rem;
+  font-size: clamp(0.62rem, 2.5cqi, 0.78rem);
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2016,7 +2020,7 @@ h1 {
 .weekly-expense-count {
   overflow: hidden;
   color: var(--text-secondary);
-  font-size: 0.74rem;
+  font-size: clamp(0.58rem, 2.35cqi, 0.74rem);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2800,7 +2804,6 @@ h1 {
   }
 
   .weekly-expense-chart {
-    grid-template-columns: repeat(auto-fit, minmax(52px, 1fr));
     gap: 4px;
   }
 
