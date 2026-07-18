@@ -1770,6 +1770,288 @@ h1 {
   font-size: 1.15rem;
 }
 
+.category-view-tabs {
+  display: inline-flex;
+  gap: 2px;
+  margin-bottom: 10px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--control-wash);
+}
+
+.category-view-tabs button {
+  min-width: 112px;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.category-view-tabs button.active {
+  background: var(--must);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.category-grouped-view {
+  display: grid;
+  gap: 8px;
+}
+
+.category-expense-group {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+}
+
+.category-expense-group summary {
+  display: grid;
+  grid-template-columns: 18px minmax(180px, 1fr) minmax(120px, auto) minmax(100px, auto);
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.category-expense-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.category-expense-group[open] summary {
+  border-bottom: 1px solid var(--gridline);
+}
+
+.category-group-expander {
+  color: var(--text-muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  transition: transform 120ms ease;
+}
+
+.category-expense-group[open] .category-group-expander {
+  transform: rotate(90deg);
+}
+
+.category-group-identity {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.category-group-identity strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-group-meta,
+.category-group-average,
+.category-group-transaction-source {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.category-group-average,
+.category-group-total {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.category-group-transactions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.category-group-transactions li {
+  display: grid;
+  grid-template-columns: 70px minmax(160px, 1fr) 100px 100px;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px 9px 44px;
+  border-bottom: 1px solid var(--gridline);
+  font-size: 0.88rem;
+}
+
+.category-group-transactions li:last-child {
+  border-bottom: 0;
+}
+
+.category-group-transaction-date,
+.category-group-transactions li > strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.category-group-transactions li > strong {
+  text-align: end;
+}
+
+.category-group-transaction-merchant {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-charts {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 12px;
+}
+
+.category-charts.empty-row {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+}
+
+.category-chart-section {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+}
+
+.category-chart-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.category-chart-heading h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.category-chart-heading span {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.weekly-expense-chart {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  align-items: end;
+  gap: 8px;
+  min-height: 240px;
+  padding-top: 4px;
+}
+
+.weekly-expense-column {
+  display: grid;
+  grid-template-rows: 24px 150px auto 18px;
+  align-items: end;
+  gap: 4px;
+  min-width: 0;
+  text-align: center;
+}
+
+.weekly-expense-column > strong {
+  overflow: hidden;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weekly-expense-track {
+  position: relative;
+  width: min(44px, 72%);
+  height: 150px;
+  justify-self: center;
+  overflow: hidden;
+  border-radius: 6px 6px 2px 2px;
+  background: var(--control-wash);
+}
+
+.weekly-expense-track > span {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  border-radius: 6px 6px 2px 2px;
+}
+
+.weekly-count-chart .weekly-expense-track > span {
+  opacity: 0.68;
+}
+
+.weekly-expense-label,
+.weekly-expense-count {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weekly-expense-label {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.weekly-expense-count {
+  color: var(--text-muted);
+}
+
+.amount-distribution-chart {
+  display: grid;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.amount-distribution-section {
+  grid-column: 1 / -1;
+}
+
+.amount-distribution-row {
+  display: grid;
+  grid-template-columns: 92px minmax(70px, 1fr) 58px 82px;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+
+.amount-distribution-label {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.amount-distribution-track {
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--control-wash);
+}
+
+.amount-distribution-track > span {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  border-radius: inherit;
+}
+
+.amount-distribution-count {
+  color: var(--text-muted);
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.amount-distribution-row > strong {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
 .filter-tag {
   color: var(--text-secondary);
   font-weight: 400;
@@ -2435,6 +2717,79 @@ h1 {
 
   .tabs {
     overflow-x: auto;
+  }
+
+  .category-view-tabs {
+    display: flex;
+  }
+
+  .category-view-tabs button {
+    flex: 1;
+    min-width: 0;
+    padding-inline: 8px;
+  }
+
+  .category-expense-group summary {
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 11px 10px;
+  }
+
+  .category-group-average {
+    grid-column: 2;
+  }
+
+  .category-group-total {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .category-group-transactions li {
+    grid-template-columns: 52px minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 9px 10px;
+  }
+
+  .category-group-transaction-source {
+    grid-column: 2;
+  }
+
+  .category-group-transactions li > strong {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .category-charts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .category-chart-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .weekly-expense-chart {
+    grid-template-columns: repeat(auto-fit, minmax(52px, 1fr));
+    gap: 4px;
+  }
+
+  .weekly-expense-column {
+    grid-template-rows: 24px 130px auto 18px;
+  }
+
+  .weekly-expense-track {
+    height: 130px;
+  }
+
+  .amount-distribution-row {
+    grid-template-columns: 82px minmax(50px, 1fr) 52px;
+  }
+
+  .amount-distribution-row > strong {
+    grid-column: 2 / 4;
+    color: var(--text-muted);
+    font-size: 0.78rem;
   }
 
   .tab {

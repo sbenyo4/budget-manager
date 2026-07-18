@@ -54,7 +54,34 @@ function sliceByMain(txs: Transaction[], categoryFor: (tx: Transaction) => strin
 const sum = (txs: Transaction[]) => txs.reduce((s, t) => s + t.amount, 0);
 const amountCents = (value: number) => Math.round(value * 100);
 const MIN_SEARCH_CHARS = 2;
+const MAX_INFERRED_BILLING_DAYS = 45;
 type ExpenseScope = "all" | "fixed" | "variable";
+type CategoryViewMode = "transactions" | "summary" | "charts";
+
+interface CategoryExpenseGroup {
+  key: string;
+  merchant: string;
+  transactions: Transaction[];
+  total: number;
+  average: number;
+  firstDate: string;
+  lastDate: string;
+  recurring: boolean;
+}
+
+interface WeeklyExpenseBucket {
+  key: string;
+  label: string;
+  total: number;
+  count: number;
+}
+
+interface AmountDistributionBin {
+  key: string;
+  label: string;
+  total: number;
+  count: number;
+}
 
 function fixedExpenseKey(tx: Transaction): string {
   return `${tx.categoryMain}::${merchantKey(tx)}`;
@@ -119,6 +146,86 @@ function normalizeSearchText(value: string): string {
 
 function formatShortDate(value: string): string {
   return new Date(`${value}T00:00:00`).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+}
+
+function addIsoDays(value: string, days: number): string {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function weeklyExpenseBuckets(expenses: Transaction[]): WeeklyExpenseBucket[] {
+  if (expenses.length === 0) return [];
+
+  const dates = expenses.map((tx) => tx.date).sort();
+  const firstDate = dates[0];
+  const lastDate = dates[dates.length - 1];
+  const buckets: WeeklyExpenseBucket[] = [];
+  for (let weekStart = firstDate; weekStart <= lastDate; weekStart = addIsoDays(weekStart, 7)) {
+    const weekEnd = addIsoDays(weekStart, 6);
+    const visibleTo = weekEnd > lastDate ? lastDate : weekEnd;
+    buckets.push({
+      key: weekStart,
+      label: `${formatShortDate(weekStart)}–${formatShortDate(visibleTo)}`,
+      total: 0,
+      count: 0,
+    });
+  }
+
+  const firstTimestamp = Date.parse(`${firstDate}T00:00:00Z`);
+  for (const tx of expenses) {
+    const transactionTimestamp = Date.parse(`${tx.date}T00:00:00Z`);
+    const bucketIndex = Math.floor((transactionTimestamp - firstTimestamp) / (7 * 24 * 60 * 60 * 1000));
+    const bucket = buckets[bucketIndex];
+    if (!bucket) continue;
+    bucket.total += tx.amount;
+    bucket.count += 1;
+  }
+
+  return buckets;
+}
+
+const AMOUNT_DISTRIBUTION_RANGES = [
+  { key: "under-50", label: "עד 50 ₪", min: 0, max: 50 },
+  { key: "50-100", label: "50–100 ₪", min: 50, max: 100 },
+  { key: "100-250", label: "100–250 ₪", min: 100, max: 250 },
+  { key: "250-500", label: "250–500 ₪", min: 250, max: 500 },
+  { key: "500-1000", label: "500–1,000 ₪", min: 500, max: 1000 },
+  { key: "over-1000", label: "מעל 1,000 ₪", min: 1000, max: Number.POSITIVE_INFINITY },
+] as const;
+
+function amountDistribution(expenses: Transaction[]): AmountDistributionBin[] {
+  const bins = AMOUNT_DISTRIBUTION_RANGES.map(({ key, label }) => ({ key, label, total: 0, count: 0 }));
+  for (const tx of expenses) {
+    const index = AMOUNT_DISTRIBUTION_RANGES.findIndex((range) => tx.amount >= range.min && tx.amount < range.max);
+    if (index < 0) continue;
+    bins[index].total += tx.amount;
+    bins[index].count += 1;
+  }
+  return bins;
+}
+
+function inferredBillingDates(transactions: Transaction[]): Map<string, string> {
+  const knownDatesByCard = new Map<string, Set<string>>();
+  for (const tx of transactions) {
+    if (!tx.cardLast4 || !tx.billingDate) continue;
+    const dates = knownDatesByCard.get(tx.cardLast4) ?? new Set<string>();
+    dates.add(tx.billingDate);
+    knownDatesByCard.set(tx.cardLast4, dates);
+  }
+
+  const inferred = new Map<string, string>();
+  for (const tx of transactions) {
+    if (tx.billingDate || !tx.cardLast4) continue;
+    const candidates = [...(knownDatesByCard.get(tx.cardLast4) ?? [])].sort();
+    const purchaseTime = Date.parse(`${tx.date}T00:00:00Z`);
+    const match = candidates.find((candidate) => {
+      const daysAhead = (Date.parse(`${candidate}T00:00:00Z`) - purchaseTime) / (24 * 60 * 60 * 1000);
+      return daysAhead >= 0 && daysAhead <= MAX_INFERRED_BILLING_DAYS;
+    });
+    if (match) inferred.set(tx.id, match);
+  }
+  return inferred;
 }
 
 function activeSearchQuery(value: string): string {
@@ -344,6 +451,7 @@ export function MonthlyView({
   const [excludedTransactionIds, setExcludedTransactionIds] = useState<Set<string>>(() => new Set());
   const [pendingDetailsOpen, setPendingDetailsOpen] = useState(false);
   const [expenseScope, setExpenseScope] = useState<ExpenseScope>("all");
+  const [categoryViewMode, setCategoryViewMode] = useState<CategoryViewMode>("transactions");
   const sectionOverrides = preferences.sectionOverrides;
   const oneTimeExpenses = useMemo(() => new Set(preferences.oneTimeExpenses), [preferences.oneTimeExpenses]);
   const fixedExpenses = useMemo(() => new Set(preferences.fixedExpenses), [preferences.fixedExpenses]);
@@ -429,24 +537,35 @@ export function MonthlyView({
     () => sum(pendingCard.filter((t) => t.type !== "income")) - sum(pendingCard.filter((t) => t.type === "income")),
     [pendingCard]
   );
+  const inferredPendingBillingDates = useMemo(() => inferredBillingDates(pendingCard), [pendingCard]);
   const pendingGroups = useMemo(() => {
-    const groups = new Map<string, { billingDate?: string; cardLast4?: string; total: number; transactions: Transaction[] }>();
+    const groups = new Map<string, {
+      billingDate?: string;
+      cardLast4?: string;
+      total: number;
+      transactions: Transaction[];
+      inferredCount: number;
+    }>();
     for (const tx of pendingCard) {
-      const key = `${tx.billingDate ?? "next"}::${tx.cardLast4 ?? ""}`;
+      const inferredBillingDate = inferredPendingBillingDates.get(tx.id);
+      const billingDate = tx.billingDate ?? inferredBillingDate;
+      const key = `${billingDate ?? "next"}::${tx.cardLast4 ?? ""}`;
       const group = groups.get(key) ?? {
-        billingDate: tx.billingDate,
+        billingDate,
         cardLast4: tx.cardLast4,
         total: 0,
         transactions: [],
+        inferredCount: 0,
       };
       group.total += tx.type === "income" ? -tx.amount : tx.amount;
       group.transactions.push(tx);
+      if (inferredBillingDate) group.inferredCount += 1;
       groups.set(key, group);
     }
     return [...groups.values()]
       .map((group) => ({ ...group, transactions: [...group.transactions].sort((a, b) => b.date.localeCompare(a.date)) }))
       .sort((a, b) => (a.billingDate ?? "9999-99-99").localeCompare(b.billingDate ?? "9999-99-99"));
-  }, [pendingCard]);
+  }, [inferredPendingBillingDates, pendingCard]);
   const pendingBillingSummaries = useMemo(() => {
     const summaries = new Map<string, { billingDate?: string; total: number; count: number }>();
     for (const group of pendingGroups) {
@@ -606,6 +725,58 @@ export function MonthlyView({
         .filter(txMatchesVisibleSearch),
     [categoryListed, txMatchesVisibleSearch]
   );
+  const categoryExpenseGroups = useMemo<CategoryExpenseGroup[]>(() => {
+    if (!categoryFilter) return [];
+
+    const groups = new Map<string, { merchant: string; transactions: Transaction[]; total: number; recurring: boolean }>();
+    for (const tx of listed) {
+      const category = effectiveCategoryMain(tx);
+      if (
+        tx.type === "income" ||
+        excludedTransactionIds.has(tx.id) ||
+        excludedCategories.has(category)
+      ) {
+        continue;
+      }
+
+      const merchant = merchantKey(tx);
+      const key = merchant.toLocaleLowerCase("he-IL");
+      const group = groups.get(key) ?? { merchant, transactions: [], total: 0, recurring: false };
+      group.transactions.push(tx);
+      group.total += tx.amount;
+      group.recurring = group.recurring || Boolean(tx.recurring) || fixedExpenseKeys.has(fixedExpenseKey(tx));
+      groups.set(key, group);
+    }
+
+    return [...groups.entries()]
+      .map(([key, group]) => {
+        const transactions = [...group.transactions].sort((a, b) => b.date.localeCompare(a.date));
+        const dates = transactions.map((tx) => tx.date).sort();
+        return {
+          key,
+          merchant: group.merchant,
+          transactions,
+          total: group.total,
+          average: group.total / transactions.length,
+          firstDate: dates[0],
+          lastDate: dates[dates.length - 1],
+          recurring: group.recurring,
+        };
+      })
+      .sort((a, b) => b.total - a.total || a.merchant.localeCompare(b.merchant, "he"));
+  }, [categoryFilter, effectiveCategoryMain, excludedCategories, excludedTransactionIds, fixedExpenseKeys, listed]);
+  const categoryChartExpenses = useMemo(
+    () => categoryExpenseGroups.flatMap((group) => group.transactions),
+    [categoryExpenseGroups]
+  );
+  const weeklyCategoryExpenses = useMemo(
+    () => weeklyExpenseBuckets(categoryChartExpenses),
+    [categoryChartExpenses]
+  );
+  const categoryAmountDistribution = useMemo(
+    () => amountDistribution(categoryChartExpenses),
+    [categoryChartExpenses]
+  );
 
   const categorizeMerchant = useCallback((tx: Transaction, category: string) => {
     const merchant = merchantKey(tx);
@@ -651,6 +822,7 @@ export function MonthlyView({
           onChange={(e) => {
             setPeriodKey(e.target.value);
             setCategoryFilter(null);
+            setCategoryViewMode("transactions");
             setCardFilter("");
             setSearchQuery("");
             setExpandedDebitId(null);
@@ -822,6 +994,9 @@ export function MonthlyView({
                     <span>
                       {group.billingDate ? `יחויב ב-${formatShortDate(group.billingDate)}` : "בחיוב הבא"}
                       {group.cardLast4 && <span className="sub-label"> · כרטיס {group.cardLast4}</span>}
+                      {group.inferredCount > 0 && (
+                        <span className="sub-label"> · כולל {group.inferredCount} {group.inferredCount === 1 ? "שיוך משוער" : "שיוכים משוערים"}</span>
+                      )}
                     </span>
                     <strong>{formatILS(group.total)}</strong>
                   </div>
@@ -887,6 +1062,7 @@ export function MonthlyView({
               className="table-toggle"
               onClick={() => {
                 setCategoryFilter(null);
+                setCategoryViewMode("transactions");
                 setCardFilter("");
                 setSearchQuery("");
                 setExpenseScope("all");
@@ -896,7 +1072,86 @@ export function MonthlyView({
             </button>
           )}
         </div>
-        <div className="table-wrap">
+        {categoryFilter && (
+          <div className="category-view-tabs" role="tablist" aria-label="אופן הצגת הקטגוריה">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={categoryViewMode === "transactions"}
+              className={categoryViewMode === "transactions" ? "active" : ""}
+              onClick={() => setCategoryViewMode("transactions")}
+            >
+              תנועות
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={categoryViewMode === "summary"}
+              className={categoryViewMode === "summary" ? "active" : ""}
+              onClick={() => setCategoryViewMode("summary")}
+            >
+              תצוגה מרוכזת
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={categoryViewMode === "charts"}
+              className={categoryViewMode === "charts" ? "active" : ""}
+              onClick={() => setCategoryViewMode("charts")}
+            >
+              גרף
+            </button>
+          </div>
+        )}
+        {categoryFilter && categoryViewMode === "summary" ? (
+          <div className="category-grouped-view" role="tabpanel" aria-label="תצוגה מרוכזת לפי בית עסק">
+            {categoryExpenseGroups.map((group) => (
+              <details key={group.key} className="category-expense-group">
+                <summary>
+                  <span className="category-group-expander" aria-hidden>›</span>
+                  <span className="category-group-identity">
+                    <strong>{highlightSearchText(group.merchant, visibleSearchQuery)}</strong>
+                    <span className="category-group-meta">
+                      {group.transactions.length} תנועות
+                      {group.firstDate !== group.lastDate && ` · ${formatShortDate(group.firstDate)}–${formatShortDate(group.lastDate)}`}
+                      {group.recurring && <span className="recurring-tag"> · קבועה / חוזרת</span>}
+                    </span>
+                  </span>
+                  <span className="category-group-average">
+                    ממוצע {formatILSWhole(group.average)}
+                  </span>
+                  <strong className="category-group-total">{formatILS(group.total)}</strong>
+                </summary>
+                <ul className="category-group-transactions">
+                  {group.transactions.map((tx) => (
+                    <li key={tx.id}>
+                      <span className="category-group-transaction-date">{formatShortDate(tx.date)}</span>
+                      <span className="category-group-transaction-merchant">
+                        {highlightSearchText(tx.merchant, visibleSearchQuery)}
+                        {installmentText(tx) && <span className="sub-label"> · {installmentText(tx)}</span>}
+                      </span>
+                      <span className="category-group-transaction-source">
+                        {tx.source === "card" ? (tx.cardLast4 ? `כרטיס ${tx.cardLast4}` : "אשראי") : "בנק"}
+                      </span>
+                      <strong>{formatILS(tx.amount)}</strong>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ))}
+            {categoryExpenseGroups.length === 0 && (
+              <p className="empty-row">אין הוצאות תואמות להצגה מרוכזת</p>
+            )}
+          </div>
+        ) : categoryFilter && categoryViewMode === "charts" ? (
+          <CategoryExpenseCharts
+            weeklyBuckets={weeklyCategoryExpenses}
+            distribution={categoryAmountDistribution}
+            expenses={categoryChartExpenses}
+            color={mainColor(categoryFilter)}
+          />
+        ) : (
+        <div className="table-wrap" role={categoryFilter ? "tabpanel" : undefined} aria-label={categoryFilter ? "תנועות בקטגוריה" : undefined}>
           <table className="tx-table">
             <colgroup>
               <col className="tx-col-date" />
@@ -1184,6 +1439,129 @@ export function MonthlyView({
               )}
             </tbody>
           </table>
+        </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function CategoryExpenseCharts({
+  weeklyBuckets,
+  distribution,
+  expenses,
+  color,
+}: {
+  weeklyBuckets: WeeklyExpenseBucket[];
+  distribution: AmountDistributionBin[];
+  expenses: Transaction[];
+  color: string;
+}) {
+  if (expenses.length === 0) {
+    return (
+      <div className="category-charts empty-row" role="tabpanel">
+        אין הוצאות תואמות להצגה בגרף
+      </div>
+    );
+  }
+
+  const total = expenses.reduce((sum, tx) => sum + tx.amount, 0);
+  const sortedAmounts = expenses.map((tx) => tx.amount).sort((a, b) => a - b);
+  const middle = Math.floor(sortedAmounts.length / 2);
+  const median = sortedAmounts.length % 2
+    ? sortedAmounts[middle]
+    : (sortedAmounts[middle - 1] + sortedAmounts[middle]) / 2;
+  const averageTransaction = total / expenses.length;
+  const averageWeek = total / Math.max(weeklyBuckets.length, 1);
+  const averageWeeklyCount = expenses.length / Math.max(weeklyBuckets.length, 1);
+  const maxWeeklyTotal = Math.max(...weeklyBuckets.map((bucket) => bucket.total), 1);
+  const maxWeeklyCount = Math.max(...weeklyBuckets.map((bucket) => bucket.count), 1);
+  const maxBinCount = Math.max(...distribution.map((bin) => bin.count), 1);
+
+  return (
+    <div className="category-charts" role="tabpanel" aria-label="גרפים של הוצאות הקטגוריה">
+      <section className="category-chart-section">
+        <div className="category-chart-heading">
+          <h3>הוצאות לפי שבוע</h3>
+          <span>ממוצע שבועי {formatILSWhole(averageWeek)}</span>
+        </div>
+        <div
+          className="weekly-expense-chart"
+          role="img"
+          aria-label={`הוצאות שבועיות, ממוצע ${formatILSWhole(averageWeek)}`}
+        >
+          {weeklyBuckets.map((bucket) => {
+            const height = bucket.total > 0 ? Math.max((bucket.total / maxWeeklyTotal) * 100, 3) : 0;
+            return (
+              <div
+                key={bucket.key}
+                className="weekly-expense-column"
+                aria-label={`${bucket.label}: ${formatILS(bucket.total)}, ${bucket.count} עסקאות`}
+              >
+                <strong>{formatILSWhole(bucket.total)}</strong>
+                <div className="weekly-expense-track" aria-hidden>
+                  <span style={{ height: `${height}%`, backgroundColor: color }} />
+                </div>
+                <span className="weekly-expense-label">{bucket.label}</span>
+                <span className="weekly-expense-count">{bucket.count} עסקאות</span>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="category-chart-section">
+        <div className="category-chart-heading">
+          <h3>כמות הוצאות לפי שבוע</h3>
+          <span>ממוצע {averageWeeklyCount.toFixed(1)} עסקאות בשבוע</span>
+        </div>
+        <div
+          className="weekly-expense-chart weekly-count-chart"
+          role="img"
+          aria-label={`כמות עסקאות לפי שבוע, ממוצע ${averageWeeklyCount.toFixed(1)}`}
+        >
+          {weeklyBuckets.map((bucket) => {
+            const height = bucket.count > 0 ? Math.max((bucket.count / maxWeeklyCount) * 100, 3) : 0;
+            return (
+              <div
+                key={bucket.key}
+                className="weekly-expense-column"
+                aria-label={`${bucket.label}: ${bucket.count} עסקאות בסך ${formatILS(bucket.total)}`}
+              >
+                <strong>{bucket.count}</strong>
+                <div className="weekly-expense-track" aria-hidden>
+                  <span style={{ height: `${height}%`, backgroundColor: color }} />
+                </div>
+                <span className="weekly-expense-label">{bucket.label}</span>
+                <span className="weekly-expense-count">{formatILSWhole(bucket.total)}</span>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="category-chart-section amount-distribution-section">
+        <div className="category-chart-heading">
+          <h3>התפלגות סכומי העסקאות</h3>
+          <span>חציון {formatILSWhole(median)} · ממוצע {formatILSWhole(averageTransaction)}</span>
+        </div>
+        <div
+          className="amount-distribution-chart"
+          role="img"
+          aria-label={`התפלגות של ${expenses.length} עסקאות, חציון ${formatILSWhole(median)}`}
+        >
+          {distribution.map((bin) => (
+            <div key={bin.key} className="amount-distribution-row">
+              <span className="amount-distribution-label">{bin.label}</span>
+              <span className="amount-distribution-track" aria-hidden>
+                <span style={{ width: `${(bin.count / maxBinCount) * 100}%`, backgroundColor: color }} />
+              </span>
+              <span className="amount-distribution-count">
+                {bin.count} · {Math.round((bin.count / expenses.length) * 100)}%
+              </span>
+              <strong>{formatILSWhole(bin.total)}</strong>
+            </div>
+          ))}
         </div>
       </section>
     </div>
