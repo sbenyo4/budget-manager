@@ -804,6 +804,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
       ...(raw.providerId ? { cardProvider: raw.providerId } : {}),
       merchant: raw.merchantName || raw.description?.description || "לא ידוע",
       amount: Math.abs(amount),
+      ...(raw.status ? { status: raw.status.toUpperCase() } : {}),
       ...(originalAmount !== undefined && Math.abs(originalAmount) !== Math.abs(amount)
         ? { originalAmount: Math.abs(originalAmount) }
         : {}),
@@ -924,7 +925,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
 
     const debitsByDate = new Map<string, DevTransaction[]>();
     for (const tx of transactions) {
-      if (!isCardDebit(tx)) continue;
+      if (!isCardDebit(tx) || tx.status === "PENDING") continue;
       const debits = debitsByDate.get(tx.date) ?? [];
       debits.push(tx);
       debitsByDate.set(tx.date, debits);

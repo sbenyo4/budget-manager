@@ -7,6 +7,8 @@ export interface Transaction {
   merchant: string;
   /** Amount in ILS, always positive; direction is in `type` */
   amount: number;
+  /** Provider lifecycle status, e.g. PENDING until the bank books the movement. */
+  status?: string;
   /** Credit-card billing/debit date, when different from the purchase date. */
   billingDate?: string;
   /** Last 4 digits of the credit card/account number, when the provider exposes it. */

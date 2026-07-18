@@ -46,6 +46,7 @@ interface NormalizedTransaction {
   cardProvider?: string;
   merchant: string;
   amount: number;
+  status?: string;
   originalAmount?: number;
   installment?: {
     number?: number;
@@ -256,6 +257,7 @@ function normalize(raw: RawTransaction, index: number, source: "bank" | "card"):
     ...(raw.providerId ? { cardProvider: raw.providerId } : {}),
     merchant: raw.merchantName || raw.description?.description || "לא ידוע",
     amount: Math.abs(amount),
+    ...(raw.status ? { status: raw.status.toUpperCase() } : {}),
     ...(originalAmount !== undefined && Math.abs(originalAmount) !== Math.abs(amount)
       ? { originalAmount: Math.abs(originalAmount) }
       : {}),
@@ -358,7 +360,7 @@ function attachCardDebitDetails(transactions: NormalizedTransaction[]): Normaliz
 
   const debitsByDate = new Map<string, NormalizedTransaction[]>();
   for (const tx of transactions) {
-    if (!isCardDebit(tx)) continue;
+    if (!isCardDebit(tx) || tx.status === "PENDING") continue;
     const debits = debitsByDate.get(tx.date) ?? [];
     debits.push(tx);
     debitsByDate.set(tx.date, debits);

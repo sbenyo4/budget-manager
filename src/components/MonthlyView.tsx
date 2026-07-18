@@ -1199,6 +1199,7 @@ export function MonthlyView({
                   isCardDebit(tx) || displayTx.source === "card" ? cardDigitsSummary(displayTx, debitDetails) : null;
                 const sourceLabel = cardSummary ?? (tx.source === "card" ? "אשראי" : "");
                 const sourceClass = cardSummary ? "card-digits" : tx.source === "card" ? "card" : "bank";
+                const isReportedPending = tx.status === "PENDING";
                 return (
                 <Fragment key={tx.id}>
                 <tr
@@ -1260,7 +1261,10 @@ export function MonthlyView({
                     {canExpandDebit && <span className="sub-label"> · {debitDetails.length} עסקאות בכרטיס</span>}
                     {installmentText(displayTx) && <span className="sub-label"> · {installmentText(displayTx)}</span>}
                     {displayTx.recurring && <span className="recurring-tag"> · מנוי / קבוע</span>}
-                    {isCardDebit(tx) && allDebitDetails.length === 0 && (
+                    {isCardDebit(tx) && allDebitDetails.length === 0 && isReportedPending && (
+                      <span className="sub-label"> · פירוט האשראי צפוי לאחר ביצוע החיוב</span>
+                    )}
+                    {isCardDebit(tx) && allDebitDetails.length === 0 && !isReportedPending && (
                       <span className="sub-label"> · לא נמצא פירוט תואם בדיווח חברת האשראי</span>
                     )}
                       </span>
@@ -1322,7 +1326,8 @@ export function MonthlyView({
                   </td>
                   <td className="source-cell">
                     {sourceLabel && <span className={`source-chip ${sourceClass}`}>{highlightSearchText(sourceLabel, visibleSearchQuery)}</span>}
-                    {isPending(tx) && <span className="pending-chip">⏳ טרם חויב</span>}
+                    {isReportedPending && <span className="pending-chip">⏳ ממתין לביצוע</span>}
+                    {!isReportedPending && isPending(tx) && <span className="pending-chip">⏳ טרם חויב</span>}
                   </td>
                   <td className={`num ${tx.type === "income" ? "net-positive" : ""}`}>
                     {tx.type === "income" ? "+" : "−"}{highlightSearchText(formatILS(tx.amount), visibleSearchQuery)}
