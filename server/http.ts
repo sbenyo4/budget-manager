@@ -37,21 +37,6 @@ export async function readJson<T>(req: ApiRequest): Promise<T> {
   return raw ? (JSON.parse(raw) as T) : ({} as T);
 }
 
-export function parseCookies(req: ApiRequest): Record<string, string> {
-  return Object.fromEntries(
-    (req.headers.cookie ?? "")
-      .split(";")
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .map((part) => {
-        const index = part.indexOf("=");
-        return index === -1
-          ? [part, ""]
-          : [part.slice(0, index), decodeURIComponent(part.slice(index + 1))];
-      })
-  );
-}
-
 export function getQueryParam(req: ApiRequest, key: string): string | undefined {
   const fromVercelQuery = req.query?.[key];
   if (Array.isArray(fromVercelQuery)) return fromVercelQuery[0];
@@ -60,4 +45,3 @@ export function getQueryParam(req: ApiRequest, key: string): string | undefined 
   const url = new URL(req.url ?? "/", "http://localhost");
   return url.searchParams.get(key) ?? undefined;
 }
-

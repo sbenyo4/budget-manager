@@ -1,4 +1,5 @@
 import type { Transaction } from "../types";
+import { authFetch } from "./authToken";
 
 export interface Account {
   id: string;
@@ -16,7 +17,7 @@ export interface Account {
  */
 export async function fetchCheckingBalance(): Promise<{ balance: number; date: string } | null> {
   try {
-    const res = await fetch("/api/accounts");
+    const res = await authFetch("/api/accounts");
     if (!res.ok) return null;
     const accounts = (await res.json()) as Account[];
     const checking = accounts.filter((a) => a.accountType === "CHECKING" && a.currency === "ILS");
@@ -43,7 +44,7 @@ export interface FetchResult {
  * can ask the user to fill settings instead of showing unrelated sample data.
  */
 export async function fetchTransactions(from: string, to: string): Promise<FetchResult> {
-  const status = await fetch("/api/status")
+  const status = await authFetch("/api/status")
     .then(async (r) => {
       if (!r.ok) return { configured: false };
       return (await r.json()) as { configured: boolean };
@@ -54,7 +55,7 @@ export async function fetchTransactions(from: string, to: string): Promise<Fetch
     throw new Error("SERVICE_SETTINGS_REQUIRED");
   }
 
-  const res = await fetch(`/api/transactions?from=${from}&to=${to}`);
+  const res = await authFetch(`/api/transactions?from=${from}&to=${to}`);
   if (!res.ok) {
     const text = await res.text();
     let message = text || `HTTP ${res.status}`;

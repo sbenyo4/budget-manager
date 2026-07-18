@@ -1,3 +1,5 @@
+import { authFetch, setAuthToken } from "./authToken";
+
 export interface AuthUser {
   id: string;
   email: string;
@@ -48,8 +50,7 @@ export const emptyServiceSettings: ServiceSettings = {
 };
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    credentials: "include",
+  const res = await authFetch(url, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -78,15 +79,21 @@ export function getCurrentUser(): Promise<{ user: AuthUser | null }> {
   return apiJson("/api/auth/me");
 }
 
-export function loginWithGoogle(credential: string): Promise<{ user: AuthUser }> {
-  return apiJson("/api/auth/google", {
+export async function loginWithGoogle(credential: string): Promise<{ user: AuthUser }> {
+  const result = await apiJson<{ user: AuthUser; token: string }>("/api/auth/google", {
     method: "POST",
     body: JSON.stringify({ credential }),
   });
+  setAuthToken(result.token);
+  return { user: result.user };
 }
 
-export function logout(): Promise<{ ok: true }> {
-  return apiJson("/api/auth/logout", { method: "POST", body: "{}" });
+export async function logout(): Promise<{ ok: true }> {
+  try {
+    return await apiJson("/api/auth/logout", { method: "POST", body: "{}" });
+  } finally {
+    setAuthToken("");
+  }
 }
 
 export function loadPreferences(): Promise<BudgetPreferences> {

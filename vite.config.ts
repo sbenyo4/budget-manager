@@ -20,7 +20,6 @@ import { listAIModels } from "./server/aiModels";
  */
 
 const TOKEN_URL = "https://api.open-finance.ai/oauth/token";
-const SESSION_COOKIE = "budget_session";
 const AI_ANALYSIS_CACHE_VERSION = "ai-analysis-cache-v2";
 const PREFS_DEFAULT = {
   sectionOverrides: {},
@@ -210,32 +209,9 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-function parseCookies(req: IncomingMessage): Record<string, string> {
-  return Object.fromEntries(
-    (req.headers.cookie ?? "")
-      .split(";")
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .map((part) => {
-        const index = part.indexOf("=");
-        return index === -1
-          ? [part, ""]
-          : [part.slice(0, index), decodeURIComponent(part.slice(index + 1))];
-      })
-  );
-}
-
-function sessionCookie(value: string, maxAgeSeconds: number, secureCookie: boolean): string {
-  return [
-    `${SESSION_COOKIE}=${encodeURIComponent(value)}`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    `Max-Age=${maxAgeSeconds}`,
-    secureCookie ? "Secure" : "",
-  ]
-    .filter(Boolean)
-    .join("; ");
+function bearerToken(req: IncomingMessage): string | undefined {
+  const authorization = req.headers.authorization ?? "";
+  return /^Bearer\s+(.+)$/i.exec(authorization)?.[1];
 }
 
 function tokenHash(token: string): string {
@@ -279,7 +255,6 @@ async function verifyGoogleCredential(credential: string, clientId: string): Pro
 
 function preferencesAuth(env: Record<string, string>): Plugin {
   const googleClientId = env.GOOGLE_CLIENT_ID ?? "";
-  const secureCookie = env.NODE_ENV === "production" || env.SECURE_COOKIES === "true";
   const dbPath = env.BUDGET_DB_PATH || join(process.cwd(), ".data", "budget.sqlite");
   const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
   mkdirSync(dirname(dbPath), { recursive: true });
@@ -393,7 +368,7 @@ function preferencesAuth(env: Record<string, string>): Plugin {
   }
 
   function currentUser(req: IncomingMessage) {
-    const token = parseCookies(req)[SESSION_COOKIE];
+    const token = bearerToken(req);
     if (!token) return null;
     return getUserBySession.get(tokenHash(token), Date.now()) as
       | { id: string; email: string; name: string; picture: string }
@@ -432,17 +407,15 @@ function preferencesAuth(env: Record<string, string>): Plugin {
           const token = randomBytes(32).toString("base64url");
           const maxAge = 60 * 60 * 24 * 30;
           insertSession.run(tokenHash(token), user.id, Date.now() + maxAge * 1000);
-          res.setHeader("Set-Cookie", sessionCookie(token, maxAge, secureCookie));
-          sendJson(res, 200, { user });
+          sendJson(res, 200, { user, token });
         })
         .catch((err: unknown) => sendJson(res, 401, { error: err instanceof Error ? err.message : String(err) }));
       return;
     }
 
     if (url.pathname === "/api/auth/logout" && req.method === "POST") {
-      const token = parseCookies(req)[SESSION_COOKIE];
+      const token = bearerToken(req);
       if (token) deleteSession.run(tokenHash(token));
-      res.setHeader("Set-Cookie", sessionCookie("", 0, secureCookie));
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -641,7 +614,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
   const pendingTokens = new Map<string, Promise<string>>();
 
   function currentUser(req: IncomingMessage) {
-    const token = parseCookies(req)[SESSION_COOKIE];
+    const token = bearerToken(req);
     if (!token) return null;
     return getUserBySession.get(tokenHash(token), Date.now()) as
       | { id: string; email: string; name: string; picture: string }

@@ -1,6 +1,6 @@
 import type { ApiRequest, ApiResponse } from "../../server/http.js";
 import { readJson, sendJson } from "../../server/http.js";
-import { createSessionToken, sessionCookie, tokenHash, verifyGoogleCredential } from "../../server/auth.js";
+import { createSessionToken, tokenHash, verifyGoogleCredential } from "../../server/auth.js";
 import { insertSession, upsertUser } from "../../server/db.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
@@ -31,8 +31,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const token = createSessionToken();
     const maxAge = 60 * 60 * 24 * 30;
     await insertSession(tokenHash(token), user.id, Date.now() + maxAge * 1000);
-    res.setHeader("Set-Cookie", sessionCookie(token, maxAge));
-    sendJson(res, 200, { user });
+    sendJson(res, 200, { user, token });
   } catch (err) {
     sendJson(res, 401, { error: err instanceof Error ? err.message : String(err) });
   }

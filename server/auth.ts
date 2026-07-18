@@ -1,10 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createHash, createPublicKey, randomBytes, verify as verifySignature } from "node:crypto";
 import type { ApiRequest, ApiResponse } from "./http.js";
-import { parseCookies } from "./http.js";
 import { getUserBySession, type AuthUser } from "./db.js";
-
-export const SESSION_COOKIE = "budget_session";
 
 interface GooglePayload {
   sub: string;
@@ -29,28 +26,16 @@ export function createSessionToken(): string {
   return randomBytes(32).toString("base64url");
 }
 
-export function sessionCookie(value: string, maxAgeSeconds: number): string {
-  const secureCookie = process.env.NODE_ENV === "production" || process.env.SECURE_COOKIES === "true";
-  return [
-    `${SESSION_COOKIE}=${encodeURIComponent(value)}`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    `Max-Age=${maxAgeSeconds}`,
-    secureCookie ? "Secure" : "",
-  ]
-    .filter(Boolean)
-    .join("; ");
-}
-
 export async function currentUser(req: ApiRequest): Promise<AuthUser | null> {
-  const token = parseCookies(req)[SESSION_COOKIE];
+  const token = currentSessionToken(req);
   if (!token) return null;
   return getUserBySession(tokenHash(token), Date.now());
 }
 
 export function currentSessionToken(req: ApiRequest): string | undefined {
-  return parseCookies(req)[SESSION_COOKIE];
+  const authorization = req.headers.authorization ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
+  return match?.[1];
 }
 
 export async function verifyGoogleCredential(credential: string, clientId: string): Promise<GooglePayload> {

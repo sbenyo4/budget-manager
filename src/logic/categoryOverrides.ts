@@ -281,7 +281,9 @@ function merchantSimilarityScore(a: string, b: string): number {
 
   const tokensA = new Set(meaningfulMerchantTokens(a));
   const tokensB = meaningfulMerchantTokens(b);
-  return tokensB.reduce((score, token) => score + (tokensA.has(token) ? token.length * token.length : 0), 0);
+  const sharedTokens = tokensB.filter((token) => tokensA.has(token));
+  if (sharedTokens.length < 2) return 0;
+  return sharedTokens.reduce((score, token) => score + token.length * token.length, 0);
 }
 
 function bestMerchantMatch<T extends { merchant: string }>(merchant: string, candidates: T[]): T | undefined {

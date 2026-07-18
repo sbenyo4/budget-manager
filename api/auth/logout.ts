@@ -1,6 +1,6 @@
 import type { ApiRequest, ApiResponse } from "../../server/http.js";
 import { sendJson } from "../../server/http.js";
-import { currentSessionToken, sessionCookie, tokenHash } from "../../server/auth.js";
+import { currentSessionToken, tokenHash } from "../../server/auth.js";
 import { deleteSession } from "../../server/db.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
@@ -14,7 +14,6 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {
     const token = currentSessionToken(req);
     if (token) await deleteSession(tokenHash(token));
-    res.setHeader("Set-Cookie", sessionCookie("", 0));
     sendJson(res, 200, { ok: true });
   } catch (err) {
     sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
