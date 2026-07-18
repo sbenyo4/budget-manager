@@ -1912,6 +1912,32 @@ h1 {
   background: var(--surface-1);
 }
 
+.category-statistics-summary {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.category-statistic-card {
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+}
+
+.category-statistic-card > span,
+.category-statistic-card > small {
+  color: var(--text-muted);
+}
+
+.category-statistic-card > strong {
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+}
+
 .category-chart-section {
   min-width: 0;
   padding: 14px;
@@ -2760,6 +2786,10 @@ h1 {
   }
 
   .category-charts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .category-statistics-summary {
     grid-template-columns: minmax(0, 1fr);
   }
 

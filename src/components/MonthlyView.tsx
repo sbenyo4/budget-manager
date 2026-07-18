@@ -56,7 +56,7 @@ const amountCents = (value: number) => Math.round(value * 100);
 const MIN_SEARCH_CHARS = 2;
 const MAX_INFERRED_BILLING_DAYS = 45;
 type ExpenseScope = "all" | "fixed" | "variable";
-type CategoryViewMode = "transactions" | "summary" | "charts";
+type CategoryViewMode = "transactions" | "summary" | "statistics";
 
 interface CategoryExpenseGroup {
   key: string;
@@ -154,12 +154,12 @@ function addIsoDays(value: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-function weeklyExpenseBuckets(expenses: Transaction[]): WeeklyExpenseBucket[] {
+function weeklyExpenseBuckets(expenses: Transaction[], throughDate: string): WeeklyExpenseBucket[] {
   if (expenses.length === 0) return [];
 
   const dates = expenses.map((tx) => tx.date).sort();
   const firstDate = dates[0];
-  const lastDate = dates[dates.length - 1];
+  const lastDate = throughDate > dates[dates.length - 1] ? throughDate : dates[dates.length - 1];
   const buckets: WeeklyExpenseBucket[] = [];
   for (let weekStart = firstDate; weekStart <= lastDate; weekStart = addIsoDays(weekStart, 7)) {
     const weekEnd = addIsoDays(weekStart, 6);
@@ -770,8 +770,8 @@ export function MonthlyView({
     [categoryExpenseGroups]
   );
   const weeklyCategoryExpenses = useMemo(
-    () => weeklyExpenseBuckets(categoryChartExpenses),
-    [categoryChartExpenses]
+    () => weeklyExpenseBuckets(categoryChartExpenses, periodTo),
+    [categoryChartExpenses, periodTo]
   );
   const categoryAmountDistribution = useMemo(
     () => amountDistribution(categoryChartExpenses),
@@ -1095,11 +1095,11 @@ export function MonthlyView({
             <button
               type="button"
               role="tab"
-              aria-selected={categoryViewMode === "charts"}
-              className={categoryViewMode === "charts" ? "active" : ""}
-              onClick={() => setCategoryViewMode("charts")}
+              aria-selected={categoryViewMode === "statistics"}
+              className={categoryViewMode === "statistics" ? "active" : ""}
+              onClick={() => setCategoryViewMode("statistics")}
             >
-              גרף
+              סטטיסטיקות
             </button>
           </div>
         )}
@@ -1143,12 +1143,13 @@ export function MonthlyView({
               <p className="empty-row">אין הוצאות תואמות להצגה מרוכזת</p>
             )}
           </div>
-        ) : categoryFilter && categoryViewMode === "charts" ? (
-          <CategoryExpenseCharts
+        ) : categoryFilter && categoryViewMode === "statistics" ? (
+          <CategoryExpenseStatistics
             weeklyBuckets={weeklyCategoryExpenses}
             distribution={categoryAmountDistribution}
             expenses={categoryChartExpenses}
             color={mainColor(categoryFilter)}
+            throughDate={periodTo}
           />
         ) : (
         <div className="table-wrap" role={categoryFilter ? "tabpanel" : undefined} aria-label={categoryFilter ? "תנועות בקטגוריה" : undefined}>
@@ -1448,21 +1449,23 @@ export function MonthlyView({
   );
 }
 
-function CategoryExpenseCharts({
+function CategoryExpenseStatistics({
   weeklyBuckets,
   distribution,
   expenses,
   color,
+  throughDate,
 }: {
   weeklyBuckets: WeeklyExpenseBucket[];
   distribution: AmountDistributionBin[];
   expenses: Transaction[];
   color: string;
+  throughDate: string;
 }) {
   if (expenses.length === 0) {
     return (
       <div className="category-charts empty-row" role="tabpanel">
-        אין הוצאות תואמות להצגה בגרף
+        אין הוצאות תואמות להצגה בסטטיסטיקות
       </div>
     );
   }
@@ -1474,14 +1477,33 @@ function CategoryExpenseCharts({
     ? sortedAmounts[middle]
     : (sortedAmounts[middle - 1] + sortedAmounts[middle]) / 2;
   const averageTransaction = total / expenses.length;
-  const averageWeek = total / Math.max(weeklyBuckets.length, 1);
-  const averageWeeklyCount = expenses.length / Math.max(weeklyBuckets.length, 1);
+  const firstExpenseDate = expenses.reduce((earliest, tx) => tx.date < earliest ? tx.date : earliest, expenses[0].date);
+  const lastAnalysisDate = throughDate > firstExpenseDate ? throughDate : firstExpenseDate;
+  const analysisDays = Math.max(
+    Math.floor((Date.parse(`${lastAnalysisDate}T00:00:00Z`) - Date.parse(`${firstExpenseDate}T00:00:00Z`)) / 86_400_000) + 1,
+    1
+  );
+  const averageDay = total / analysisDays;
+  const averageWeek = averageDay * 7;
+  const averageWeeklyCount = (expenses.length / analysisDays) * 7;
   const maxWeeklyTotal = Math.max(...weeklyBuckets.map((bucket) => bucket.total), 1);
   const maxWeeklyCount = Math.max(...weeklyBuckets.map((bucket) => bucket.count), 1);
   const maxBinCount = Math.max(...distribution.map((bin) => bin.count), 1);
 
   return (
-    <div className="category-charts" role="tabpanel" aria-label="גרפים של הוצאות הקטגוריה">
+    <div className="category-charts" role="tabpanel" aria-label="סטטיסטיקות של הוצאות הקטגוריה">
+      <section className="category-statistics-summary" aria-label="ממוצעי הוצאה">
+        <div className="category-statistic-card">
+          <span>ממוצע הוצאה ליום</span>
+          <strong>{formatILS(averageDay)}</strong>
+          <small>לפי {analysisDays} ימים מההוצאה הראשונה</small>
+        </div>
+        <div className="category-statistic-card">
+          <span>ממוצע הוצאה לשבוע</span>
+          <strong>{formatILS(averageWeek)}</strong>
+          <small>קצב שבועי מנורמל ל־7 ימים</small>
+        </div>
+      </section>
       <section className="category-chart-section">
         <div className="category-chart-heading">
           <h3>הוצאות לפי שבוע</h3>
