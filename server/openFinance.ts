@@ -1,4 +1,6 @@
 import type { ServiceSettings } from "./db.js";
+import { openFinanceApiUrl } from "./openFinanceEndpoint.js";
+import { fetchWithTimeout } from "./fetchWithTimeout.js";
 
 const TOKEN_URL = "https://api.open-finance.ai/oauth/token";
 
@@ -79,7 +81,7 @@ async function getToken(settings: ServiceSettings): Promise<string> {
   if (pending) return pending;
 
   const request = (async () => {
-    const res = await fetch(TOKEN_URL, {
+    const res = await fetchWithTimeout(TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -89,7 +91,7 @@ async function getToken(settings: ServiceSettings): Promise<string> {
       }),
     });
     if (!res.ok) {
-      throw new Error(`Token request failed (${res.status}): ${await res.text()}`);
+      throw new Error(`Token request failed (${res.status})`);
     }
     const body = (await res.json()) as { accessToken?: string; expiresIn?: number };
     if (!body.accessToken) throw new Error("Token response did not include an access token");
@@ -123,15 +125,15 @@ async function fetchTransactions(
       seenPages.add(nextPage);
     }
     if (seenPages.size > 100) throw new Error("Transactions pagination exceeded 100 pages");
-    const url = new URL(`https://${settings.openFinanceApiPrefix}.open-finance.ai/v2/data/transactions`);
+    const url = openFinanceApiUrl(settings.openFinanceApiPrefix, "/v2/data/transactions");
     url.searchParams.set("dateFrom", from);
     url.searchParams.set("dateTo", to);
     url.searchParams.set("sort", "1");
     url.searchParams.set("type", providerType);
     if (nextPage) url.searchParams.set("nextPage", nextPage);
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!res.ok) {
-      throw new Error(`Transactions request failed (${res.status}): ${await res.text()}`);
+      throw new Error(`Transactions request failed (${res.status})`);
     }
     const body = (await res.json()) as { nextPage?: string | null; items?: RawTransaction[] };
     items.push(...(body.items ?? []));
@@ -416,11 +418,11 @@ export async function getAccounts(settings: ServiceSettings) {
       seenPages.add(nextPage);
     }
     if (seenPages.size > 100) throw new Error("Accounts pagination exceeded 100 pages");
-    const url = new URL(`https://${settings.openFinanceApiPrefix}.open-finance.ai/v2/data/accounts`);
+    const url = openFinanceApiUrl(settings.openFinanceApiPrefix, "/v2/data/accounts");
     if (nextPage) url.searchParams.set("nextPage", nextPage);
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!res.ok) {
-      throw new Error(`Accounts request failed (${res.status}): ${await res.text()}`);
+      throw new Error(`Accounts request failed (${res.status})`);
     }
     const body = (await res.json()) as { nextPage?: string | null; items?: RawAccount[] };
     items.push(...(body.items ?? []));

@@ -106,15 +106,6 @@ function calculateAgeFromBirthDate(birthDate: string, now = new Date()): number 
   return age > 0 ? age : null;
 }
 
-function openFinanceSettingsChanged(previous: ServiceSettings, next: ServiceSettings): boolean {
-  return (
-    previous.openFinanceClientId !== next.openFinanceClientId ||
-    previous.openFinanceClientSecret !== next.openFinanceClientSecret ||
-    previous.openFinanceUserId !== next.openFinanceUserId ||
-    previous.openFinanceApiPrefix !== next.openFinanceApiPrefix
-  );
-}
-
 function changedPreferences(previous: BudgetPreferences, next: BudgetPreferences): Partial<BudgetPreferences> {
   const patch: Partial<BudgetPreferences> = {};
   if (previous.highAmountThreshold !== next.highAmountThreshold) patch.highAmountThreshold = next.highAmountThreshold;
@@ -206,6 +197,7 @@ function BudgetApp() {
   const [loading, setLoading] = useState(true);
   const preferencesSaveSeq = useRef(0);
   const preferencesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const preferencesSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingPreferencesPatchRef = useRef<Partial<BudgetPreferences>>({});
   const preferencesRef = useRef<BudgetPreferences>(emptyPreferences);
   const [, startPreferencesTransition] = useTransition();
@@ -284,9 +276,12 @@ function BudgetApp() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     if (!user || pinGate !== "unlocked") {
       setLoading(false);
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
     setLoading(true);
     setError(null);
@@ -294,11 +289,17 @@ function BudgetApp() {
     // One wide fetch feeds both views: ~13 months back for salary-period history
     fetchTransactions(isoDaysAgo(400), endOfCurrentYear())
       .then(({ transactions: txs, demo }) => {
+        if (cancelled) return;
         setAllTransactions(txs);
         setIsDemoMode(demo);
-        if (!demo) fetchCheckingBalance().then(setBankBalance);
+        if (!demo) {
+          return fetchCheckingBalance().then((balance) => {
+            if (!cancelled) setBankBalance(balance);
+          });
+        }
       })
       .catch((err: unknown) => {
+        if (cancelled) return;
         const message = err instanceof Error ? err.message : String(err);
         if (message === "SERVICE_SETTINGS_REQUIRED") {
           setAllTransactions([]);
@@ -309,14 +310,23 @@ function BudgetApp() {
         }
         setError(message);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [dataReloadKey, pinGate, user]);
 
   useEffect(() => {
     if (!user || pinGate !== "unlocked") return;
+    let cancelled = false;
     loadServiceSettings()
-      .then(setServiceSettings)
+      .then((settings) => {
+        if (!cancelled) setServiceSettings(settings);
+      })
       .catch((err: unknown) => {
+        if (cancelled) return;
         if (isMissingServiceSettingsError(err)) {
           setServiceSettings(emptyServiceSettings);
           setServiceSettingsRequired(true);
@@ -325,6 +335,9 @@ function BudgetApp() {
         }
         setError(err instanceof Error ? err.message : String(err));
       });
+    return () => {
+      cancelled = true;
+    };
   }, [pinGate, user]);
 
   const updatePreferences = useCallback((next: BudgetPreferences) => {
@@ -344,7 +357,9 @@ function BudgetApp() {
       preferencesSaveTimerRef.current = null;
       const patchToSave = pendingPreferencesPatchRef.current;
       pendingPreferencesPatchRef.current = {};
-      patchPreferences(patchToSave)
+      const saveRequest = preferencesSaveQueueRef.current.then(() => patchPreferences(patchToSave));
+      preferencesSaveQueueRef.current = saveRequest.then(() => undefined, () => undefined);
+      saveRequest
         .then((saved) => {
           if (preferencesSaveSeq.current !== saveSeq) return;
           preferencesRef.current = saved;
@@ -382,14 +397,16 @@ function BudgetApp() {
   }, []);
 
   const handleLogout = useCallback(() => {
-    logout().then(() => {
-      setUser(null);
-      setPinGate("checking");
-      setAllTransactions([]);
-      setBankBalance(null);
-      setPreferences(emptyPreferences);
-      setServiceSettings(emptyServiceSettings);
-    });
+    logout()
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => {
+        setUser(null);
+        setPinGate("checking");
+        setAllTransactions([]);
+        setBankBalance(null);
+        setPreferences(emptyPreferences);
+        setServiceSettings(emptyServiceSettings);
+      });
   }, []);
 
   const handleServiceSettingsSave = useCallback((
@@ -402,6 +419,11 @@ function BudgetApp() {
     const combinedPreferencesPatch = { ...pendingPreferencesPatchRef.current, ...preferencesPatch };
     const shouldSaveService = hasPatchValue(servicePatch);
     const shouldSavePreferences = hasPatchValue(combinedPreferencesPatch);
+    const shouldReloadOpenFinance =
+      "openFinanceClientId" in servicePatch ||
+      "openFinanceClientSecret" in servicePatch ||
+      "openFinanceUserId" in servicePatch ||
+      "openFinanceApiPrefix" in servicePatch;
 
     if (!shouldSaveService && !shouldSavePreferences) {
       setSettingsOpen(false);
@@ -418,16 +440,22 @@ function BudgetApp() {
         preferencesSaveTimerRef.current = null;
       }
     }
+    const preferencesSaveRequest = shouldSavePreferences
+      ? preferencesSaveQueueRef.current.then(() => patchPreferences(combinedPreferencesPatch))
+      : Promise.resolve(preferences);
+    if (shouldSavePreferences) {
+      preferencesSaveQueueRef.current = preferencesSaveRequest.then(() => undefined, () => undefined);
+    }
     return Promise.all([
       shouldSaveService ? patchServiceSettings(servicePatch) : Promise.resolve(serviceSettings),
-      shouldSavePreferences ? patchPreferences(combinedPreferencesPatch) : Promise.resolve(preferences),
+      preferencesSaveRequest,
     ])
       .then(([savedSettings, savedPreferences]) => {
         setServiceSettings(savedSettings);
         preferencesRef.current = savedPreferences;
         setPreferences(savedPreferences);
         setSettingsOpen(false);
-        const shouldReloadData = shouldSaveService && (serviceSettingsRequired || openFinanceSettingsChanged(serviceSettings, savedSettings));
+        const shouldReloadData = shouldSaveService && (serviceSettingsRequired || shouldReloadOpenFinance);
         if (shouldReloadData) {
           setAllTransactions([]);
           setBankBalance(null);

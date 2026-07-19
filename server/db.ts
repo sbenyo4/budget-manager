@@ -82,6 +82,9 @@ export function ensureSchema(): Promise<void> {
         token_hash TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         expires_at BIGINT NOT NULL,
+        pin_unlocked_at BIGINT,
+        pin_failures INTEGER NOT NULL DEFAULT 0,
+        pin_locked_until BIGINT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
         `,
@@ -114,8 +117,22 @@ export function ensureSchema(): Promise<void> {
         data JSONB NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (user_id, cache_key)
+        )
+        `,
+        db`
+        CREATE TABLE IF NOT EXISTS api_rate_limits (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        action TEXT NOT NULL,
+        window_start BIGINT NOT NULL,
+        request_count INTEGER NOT NULL,
+        PRIMARY KEY (user_id, action)
       )
         `,
+      ]);
+      await Promise.all([
+        db`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pin_unlocked_at BIGINT`,
+        db`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pin_failures INTEGER NOT NULL DEFAULT 0`,
+        db`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pin_locked_until BIGINT`,
       ]);
       await Promise.all([
         db`CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions (expires_at)`,
@@ -137,6 +154,20 @@ export async function getUserBySession(tokenHash: string, now: number): Promise<
     FROM sessions
     JOIN users ON users.id = sessions.user_id
     WHERE sessions.token_hash = ${tokenHash} AND sessions.expires_at > ${now}
+    LIMIT 1
+  `) as AuthUser[];
+  return rows[0] ?? null;
+}
+
+export async function getUserByUnlockedSession(tokenHash: string, now: number): Promise<AuthUser | null> {
+  await ensureSchema();
+  const rows = (await sql()`
+    SELECT users.id, users.email, users.name, users.picture
+    FROM sessions
+    JOIN users ON users.id = sessions.user_id
+    WHERE sessions.token_hash = ${tokenHash}
+      AND sessions.expires_at > ${now}
+      AND sessions.pin_unlocked_at IS NOT NULL
     LIMIT 1
   `) as AuthUser[];
   return rows[0] ?? null;
@@ -167,6 +198,44 @@ export async function insertSession(tokenHash: string, userId: string, expiresAt
 export async function deleteSession(tokenHash: string): Promise<void> {
   await ensureSchema();
   await sql()`DELETE FROM sessions WHERE token_hash = ${tokenHash}`;
+}
+
+export async function getPinAttemptState(tokenHash: string): Promise<{ failures: number; lockedUntil: number | null } | null> {
+  await ensureSchema();
+  const rows = (await sql()`
+    SELECT pin_failures AS failures, pin_locked_until AS "lockedUntil"
+    FROM sessions
+    WHERE token_hash = ${tokenHash}
+    LIMIT 1
+  `) as Array<{ failures: number; lockedUntil: number | null }>;
+  return rows[0] ?? null;
+}
+
+export async function recordPinFailure(tokenHash: string, now: number, maxFailures: number, lockMs: number): Promise<void> {
+  await ensureSchema();
+  await sql()`
+    UPDATE sessions
+    SET
+      pin_failures = CASE
+        WHEN pin_locked_until IS NOT NULL AND pin_locked_until <= ${now} THEN 1
+        ELSE pin_failures + 1
+      END,
+      pin_locked_until = CASE
+        WHEN (CASE WHEN pin_locked_until IS NOT NULL AND pin_locked_until <= ${now} THEN 1 ELSE pin_failures + 1 END) >= ${maxFailures}
+          THEN ${now + lockMs}
+        ELSE NULL
+      END
+    WHERE token_hash = ${tokenHash}
+  `;
+}
+
+export async function unlockSession(tokenHash: string, now: number): Promise<void> {
+  await ensureSchema();
+  await sql()`
+    UPDATE sessions
+    SET pin_unlocked_at = ${now}, pin_failures = 0, pin_locked_until = NULL
+    WHERE token_hash = ${tokenHash}
+  `;
 }
 
 export async function getPreferences(userId: string): Promise<BudgetPreferences> {
@@ -282,4 +351,34 @@ export async function upsertPinCredential(userId: string, salt: string, pinHash:
       pin_hash = EXCLUDED.pin_hash,
       updated_at = NOW()
   `;
+}
+
+export async function consumeRateLimit(
+  userId: string,
+  action: string,
+  limit: number,
+  windowMs: number,
+  now = Date.now()
+): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
+  await ensureSchema();
+  const windowStart = Math.floor(now / windowMs) * windowMs;
+  const rows = (await sql()`
+    INSERT INTO api_rate_limits (user_id, action, window_start, request_count)
+    VALUES (${userId}, ${action}, ${windowStart}, 1)
+    ON CONFLICT (user_id, action) DO UPDATE SET
+      window_start = CASE
+        WHEN api_rate_limits.window_start = ${windowStart} THEN api_rate_limits.window_start
+        ELSE ${windowStart}
+      END,
+      request_count = CASE
+        WHEN api_rate_limits.window_start = ${windowStart} THEN api_rate_limits.request_count + 1
+        ELSE 1
+      END
+    RETURNING request_count AS count
+  `) as Array<{ count: number }>;
+  const count = rows[0]?.count ?? limit + 1;
+  return {
+    allowed: count <= limit,
+    retryAfterSeconds: Math.max(1, Math.ceil((windowStart + windowMs - now) / 1000)),
+  };
 }

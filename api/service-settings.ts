@@ -1,46 +1,24 @@
 import type { ApiRequest, ApiResponse } from "../server/http.js";
 import { readJson, sendJson } from "../server/http.js";
-import { currentUser } from "../server/auth.js";
+import { currentUnlockedUser } from "../server/auth.js";
 import {
   getServiceSettings,
   upsertServiceSettings,
   type ServiceSettings,
 } from "../server/db.js";
-
-function normalizeServiceSettings(body: Partial<ServiceSettings>): ServiceSettings {
-  const provider = body.aiProvider === "anthropic" || body.aiProvider === "gemini" ? body.aiProvider : "openai";
-  return {
-    openFinanceClientId: typeof body.openFinanceClientId === "string" ? body.openFinanceClientId.trim() : "",
-    openFinanceClientSecret:
-      typeof body.openFinanceClientSecret === "string" ? body.openFinanceClientSecret.trim() : "",
-    openFinanceUserId: typeof body.openFinanceUserId === "string" ? body.openFinanceUserId.trim() : "",
-    openFinanceApiPrefix:
-      typeof body.openFinanceApiPrefix === "string" && body.openFinanceApiPrefix.trim()
-        ? body.openFinanceApiPrefix.trim()
-        : "api",
-    aiProvider: provider,
-    aiApiKey: typeof body.aiApiKey === "string" ? body.aiApiKey.trim() : "",
-    aiModel:
-      typeof body.aiModel === "string" && body.aiModel.trim()
-        ? body.aiModel.trim()
-        : provider === "anthropic"
-          ? "claude-haiku-4-5"
-          : provider === "gemini"
-            ? "gemini-2.0-flash"
-            : "gpt-4o-mini",
-  };
-}
+import { InvalidOpenFinanceApiPrefixError } from "../server/openFinanceEndpoint.js";
+import { normalizeServiceSettings, publicServiceSettings } from "../server/serviceSettings.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {
-    const user = await currentUser(req);
+    const user = await currentUnlockedUser(req);
     if (!user) {
-      sendJson(res, 401, { error: "AUTH_REQUIRED" });
+      sendJson(res, 401, { error: "PIN_REQUIRED" });
       return;
     }
 
     if (req.method === "GET") {
-      sendJson(res, 200, await getServiceSettings(user.id));
+      sendJson(res, 200, publicServiceSettings(await getServiceSettings(user.id)));
       return;
     }
 
@@ -49,7 +27,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       const base = req.method === "PATCH" ? await getServiceSettings(user.id) : {};
       const settings = normalizeServiceSettings({ ...base, ...body });
       await upsertServiceSettings(user.id, settings);
-      sendJson(res, 200, settings);
+      sendJson(res, 200, publicServiceSettings(settings));
       return;
     }
 
@@ -57,6 +35,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     res.setHeader("Allow", "GET, PUT, PATCH");
     res.end("Method Not Allowed");
   } catch (err) {
+    if (err instanceof InvalidOpenFinanceApiPrefixError) {
+      sendJson(res, 400, { error: err.message });
+      return;
+    }
     sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
   }
 }

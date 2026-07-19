@@ -29,7 +29,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     };
     await upsertUser(user);
     const token = createSessionToken();
-    const maxAge = 60 * 60 * 24 * 30;
+    const maxAge = 60 * 60 * 12;
     await insertSession(tokenHash(token), user.id, Date.now() + maxAge * 1000);
     sendJson(res, 200, { user, token });
   } catch (err) {

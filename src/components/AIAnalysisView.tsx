@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
-import { cardDebitCutoffs, isCardTransactionCharged, isConsumption, isSavings } from "../logic/flows";
+import { budgetDate, cardDebitCutoffs, isCardTransactionCharged, isConsumption, isSavings } from "../logic/flows";
 import { categoryLabel } from "../logic/categoryOverrides";
 import { analyzeBudgetWithAI, type AIAnalysisResult, type BudgetPreferences } from "../api/preferences";
 import { formatILSWhole, todayIso } from "./format";
@@ -16,14 +16,6 @@ interface Props {
 const sum = (txs: Transaction[]) => txs.reduce((total, tx) => total + tx.amount, 0);
 type AnalysisMode = "month" | "trend";
 const NON_FLOW_MAINS = new Set(["TRADING", "TRANSFER", "ASSETS", "DEPOSIT"]);
-
-function periodDate(tx: Transaction): string {
-  return tx.source === "card" ? tx.billingDate ?? tx.date : tx.date;
-}
-
-function periodTxDate(tx: Transaction, mode: AnalysisMode): string {
-  return mode === "trend" ? tx.date : periodDate(tx);
-}
 
 function roundMoney(value: number): number {
   return Math.round(value * 100) / 100;
@@ -122,10 +114,11 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
         if (!isCardTransactionCharged(tx, debitCutoffs)) return false;
         if (analysisMode === "month") {
           if (!selectedPeriod) return false;
-          const date = tx.source === "card" ? tx.billingDate ?? tx.date : tx.date;
+          const date = budgetDate(tx);
           return date >= selectedPeriod.from && date <= selectedPeriod.to;
         }
-        return Boolean(trendFrom && trendTo && tx.date >= trendFrom && tx.date <= trendTo);
+        const date = budgetDate(tx);
+        return Boolean(trendFrom && trendTo && date >= trendFrom && date <= trendTo);
       }),
     [analysisMode, debitCutoffs, selectedPeriod, transactions, trendFrom, trendTo]
   );
@@ -175,7 +168,7 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
     const monthly = new Map<string, { income: number; expense: number; savings: number; leftover: number; transactionCount: number }>();
 
     for (const tx of periodTransactions) {
-      const key = periodTxDate(tx, analysisMode).slice(0, 7) || "unknown";
+      const key = budgetDate(tx).slice(0, 7) || "unknown";
       const row = monthly.get(key) ?? { income: 0, expense: 0, savings: 0, leftover: 0, transactionCount: 0 };
       row.transactionCount += 1;
       if (tx.type === "income" && tx.source !== "card" && !NON_FLOW_MAINS.has(tx.categoryMain)) {

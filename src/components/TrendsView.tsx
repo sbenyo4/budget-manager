@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
-import { isConsumption, isSavings } from "../logic/flows";
+import { budgetDate, isConsumption, isSavings } from "../logic/flows";
 import type { BudgetPreferences } from "../api/preferences";
 import { mainColor, subLabel } from "../logic/categoryNames";
 import {
@@ -99,7 +99,7 @@ function trendTxMatchesSearch(tx: Transaction, query: string): boolean {
 }
 
 function isRepeatVariableGroup(group: { count: number; periodKeys: Set<string> }): boolean {
-  return group.periodKeys.size >= 2 || group.count >= 2;
+  return group.periodKeys.size >= 2;
 }
 
 function isFixedGroup(group: { count: number; periodKeys: Set<string>; recurring: boolean }): boolean {
@@ -114,7 +114,10 @@ function metricsFor(
   expenseScope: ExpenseScope,
   fixedExpenseKeys: Set<string>
 ): PeriodMetrics {
-  const inP = transactions.filter((tx) => tx.date >= period.from && tx.date <= period.to);
+  const inP = transactions.filter((tx) => {
+    const date = budgetDate(tx);
+    return date >= period.from && date <= period.to;
+  });
 
   // earnings: money into the bank account, excluding securities sales /
   // deposit withdrawals / transfers (those move savings, they don't earn)
@@ -181,11 +184,12 @@ function fixedBreakdownFor(
 
   for (const tx of transactions) {
     if (tx.type === "income" || !isConsumption(tx) || tx.categoryMain !== category) continue;
-    if (tx.date < from || tx.date > to) continue;
+    const date = budgetDate(tx);
+    if (date < from || date > to) continue;
     const merchant = merchantKey(tx);
     const customSection = sectionOverrides[overrideKey(category, merchant)];
     const key = customSection ? `section:${customSection}` : merchant;
-    const periodKey = periodKeyFor(tx.date, periods);
+    const periodKey = periodKeyFor(date, periods);
     const group = groups.get(key) ?? {
       label: customSection || merchant || subLabel(tx.categorySub),
       total: 0,
@@ -288,9 +292,10 @@ function fixedExpenseKeysFor(
 
   for (const tx of transactions) {
     if (tx.type === "income" || !isConsumption(tx)) continue;
-    if (tx.date < from || tx.date > to) continue;
+    const date = budgetDate(tx);
+    if (date < from || date > to) continue;
     const key = fixedExpenseKey(tx);
-    const periodKey = periodKeyFor(tx.date, periods);
+    const periodKey = periodKeyFor(date, periods);
     const group = groups.get(key) ?? { tx, count: 0, periodKeys: new Set<string>(), recurring: false, transactions: [] };
     group.count += 1;
     group.recurring = group.recurring || Boolean(tx.recurring);
@@ -430,7 +435,8 @@ export function TrendsView({
     const totalsByCategory = new Map<string, number>();
     for (const t of searchedTransactions) {
       if (t.type === "income" || !isConsumption(t)) continue;
-      if (t.date < rangeFrom || t.date > rangeTo) continue;
+      const date = budgetDate(t);
+      if (date < rangeFrom || date > rangeTo) continue;
       if (!isInExpenseScope(t, expenseScope, fixedExpenseKeys)) continue;
       totalsByCategory.set(t.categoryMain, (totalsByCategory.get(t.categoryMain) ?? 0) + t.amount);
     }
@@ -469,7 +475,7 @@ export function TrendsView({
       sortedCategoryTotals.map(([key, total]) => ({
         key,
         label: categoryLabel(key),
-        value: total / n,
+        value: n > 0 ? total / n : 0,
         color: mainColor(key),
         details:
           key === expandedCategory

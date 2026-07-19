@@ -287,15 +287,22 @@ function merchantSimilarityScore(a: string, b: string): number {
 }
 
 function bestMerchantMatch<T extends { merchant: string }>(merchant: string, candidates: T[]): T | undefined {
-  return candidates
-    .map((candidate) => ({ candidate, score: merchantSimilarityScore(merchant, candidate.merchant) }))
-    .filter(({ score }) => score > 0)
-    .sort(
-      (a, b) =>
-        b.score - a.score ||
-        b.candidate.merchant.length - a.candidate.merchant.length ||
-        a.candidate.merchant.localeCompare(b.candidate.merchant, "he")
-    )[0]?.candidate;
+  let best: { candidate: T; score: number } | undefined;
+  for (const candidate of candidates) {
+    const score = merchantSimilarityScore(merchant, candidate.merchant);
+    if (score <= 0) continue;
+    if (
+      !best ||
+      score > best.score ||
+      (score === best.score && candidate.merchant.length > best.candidate.merchant.length) ||
+      (score === best.score &&
+        candidate.merchant.length === best.candidate.merchant.length &&
+        candidate.merchant.localeCompare(best.candidate.merchant, "he") < 0)
+    ) {
+      best = { candidate, score };
+    }
+  }
+  return best?.candidate;
 }
 
 function learnedCategoryForMerchant(

@@ -2,7 +2,7 @@ import { Fragment, useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
-import { cardDebitCutoffs, isCardDebit, isCardTransactionCharged, isConsumption } from "../logic/flows";
+import { budgetDate, cardDebitCutoffs, isCardDebit, isCardTransactionCharged, isConsumption } from "../logic/flows";
 import type { BudgetPreferences } from "../api/preferences";
 import { displaySubLabel, mainColor } from "../logic/categoryNames";
 import {
@@ -98,7 +98,7 @@ function periodKeyFor(date: string, periods: Period[]): string | null {
 }
 
 function isRepeatExpenseGroup(group: { count: number; periodKeys: Set<string> }): boolean {
-  return group.periodKeys.size >= 2 || group.count >= 2;
+  return group.periodKeys.size >= 2;
 }
 
 function fixedExpenseKeysFor(
@@ -112,7 +112,7 @@ function fixedExpenseKeysFor(
   for (const tx of transactions) {
     if (tx.type === "income" || !isConsumption(tx)) continue;
     const key = fixedExpenseKey(tx);
-    const periodKey = periodKeyFor(tx.date, periods);
+    const periodKey = periodKeyFor(budgetDate(tx), periods);
     const group = groups.get(key) ?? { tx, count: 0, periodKeys: new Set<string>(), recurring: false };
     group.count += 1;
     group.recurring = group.recurring || Boolean(tx.recurring);
@@ -524,9 +524,15 @@ export function MonthlyView({
   const bankNetAfterPeriod = useMemo(
     () =>
       categorizedTransactions
-        .filter((tx) => tx.source !== "card" && tx.date > periodTo)
+        .filter(
+          (tx) =>
+            tx.source !== "card" &&
+            tx.status !== "PENDING" &&
+            tx.date > periodTo &&
+            (!bankBalance?.date || tx.date <= bankBalance.date)
+        )
         .reduce((total, tx) => total + signedBankMovement(tx), 0),
-    [categorizedTransactions, periodTo]
+    [bankBalance?.date, categorizedTransactions, periodTo]
   );
   const balanceAtPeriodEnd = bankBalance ? bankBalance.balance - bankNetAfterPeriod : null;
   const balanceAtPeriodStart = balanceAtPeriodEnd === null ? null : balanceAtPeriodEnd - accountNet;

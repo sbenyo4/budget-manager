@@ -18,7 +18,7 @@ export function cardDebitCutoffs(transactions: Transaction[]): CardDebitCutoffs 
   const byLast4 = new Map<string, string>();
   let latest = "";
   for (const tx of transactions) {
-    if (!isCardDebit(tx) || tx.type === "income") continue;
+    if (!isCardDebit(tx) || tx.type === "income" || tx.status === "PENDING") continue;
     if (tx.date > latest) latest = tx.date;
     const cardNumbers = new Set<string>();
     if (tx.cardLast4) cardNumbers.add(tx.cardLast4);
@@ -35,8 +35,13 @@ export function cardDebitCutoffs(transactions: Transaction[]): CardDebitCutoffs 
 
 export function isCardTransactionCharged(tx: Transaction, cutoffs: CardDebitCutoffs): boolean {
   if (tx.source !== "card") return true;
-  const cutoff = (tx.cardLast4 ? cutoffs.byLast4.get(tx.cardLast4) : undefined) ?? cutoffs.latest;
+  const cutoff = tx.cardLast4 ? cutoffs.byLast4.get(tx.cardLast4) : cutoffs.latest;
   return Boolean(cutoff && (tx.billingDate ?? tx.date) <= cutoff);
+}
+
+/** The date used to assign a movement to a budget period. */
+export function budgetDate(tx: Transaction): string {
+  return tx.source === "card" ? tx.billingDate ?? tx.date : tx.date;
 }
 
 /**
@@ -65,10 +70,5 @@ export function isSavings(tx: Transaction): boolean {
  * and huge one-off checks (DEPOSIT — e.g. a house payment isn't groceries).
  */
 export function isConsumption(tx: Transaction): boolean {
-  return (
-    !isCardDebit(tx) &&
-    !isSavings(tx) &&
-    tx.categoryMain !== "TRANSFER" &&
-    tx.categoryMain !== "DEPOSIT"
-  );
+  return !isCardDebit(tx) && !isSavings(tx);
 }

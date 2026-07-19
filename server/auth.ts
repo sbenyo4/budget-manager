@@ -1,7 +1,8 @@
 import { Buffer } from "node:buffer";
 import { createHash, createPublicKey, randomBytes, verify as verifySignature } from "node:crypto";
 import type { ApiRequest, ApiResponse } from "./http.js";
-import { getUserBySession, type AuthUser } from "./db.js";
+import { getUserBySession, getUserByUnlockedSession, type AuthUser } from "./db.js";
+import { fetchWithTimeout } from "./fetchWithTimeout.js";
 
 interface GooglePayload {
   sub: string;
@@ -32,6 +33,12 @@ export async function currentUser(req: ApiRequest): Promise<AuthUser | null> {
   return getUserBySession(tokenHash(token), Date.now());
 }
 
+export async function currentUnlockedUser(req: ApiRequest): Promise<AuthUser | null> {
+  const token = currentSessionToken(req);
+  if (!token) return null;
+  return getUserByUnlockedSession(tokenHash(token), Date.now());
+}
+
 export function currentSessionToken(req: ApiRequest): string | undefined {
   const authorization = req.headers.authorization ?? "";
   const match = /^Bearer\s+(.+)$/i.exec(authorization);
@@ -45,7 +52,7 @@ export async function verifyGoogleCredential(credential: string, clientId: strin
   const payload = base64UrlJson<GooglePayload>(encodedPayload);
   if (header.alg !== "RS256" || !header.kid) throw new Error("Unsupported Google credential");
 
-  const certsRes = await fetch("https://www.googleapis.com/oauth2/v3/certs");
+  const certsRes = await fetchWithTimeout("https://www.googleapis.com/oauth2/v3/certs");
   if (!certsRes.ok) throw new Error(`Google certs failed (${certsRes.status})`);
   const certs = (await certsRes.json()) as { keys?: Array<JsonWebKey & { kid?: string }> };
   const jwk = certs.keys?.find((key) => key.kid === header.kid);

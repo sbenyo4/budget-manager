@@ -8,6 +8,12 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { analyzeBudget, type AIAnalysisPayload, type AIAnalysisResult } from "./server/aiAnalysis";
 import { listAIModels } from "./server/aiModels";
+import { openFinanceApiUrl } from "./server/openFinanceEndpoint";
+import { normalizeServiceSettings, publicServiceSettings } from "./server/serviceSettings";
+import { hashPin, verifyPinHash } from "./server/pinSecurity";
+import { fetchWithTimeout } from "./server/fetchWithTimeout";
+import { normalizePreferences } from "./server/preferences";
+import { isValidAIAnalysisPayload } from "./server/aiPayload";
 
 /**
  * Server-side proxy for the open-finance.ai API.
@@ -116,49 +122,6 @@ const EMPTY_SERVICE_SETTINGS: ServiceSettings = {
   aiModel: "gpt-4o-mini",
 };
 
-function normalizeServiceSettings(body: Partial<ServiceSettings>): ServiceSettings {
-  const provider = body.aiProvider === "anthropic" || body.aiProvider === "gemini" ? body.aiProvider : "openai";
-  return {
-    openFinanceClientId: typeof body.openFinanceClientId === "string" ? body.openFinanceClientId.trim() : "",
-    openFinanceClientSecret:
-      typeof body.openFinanceClientSecret === "string" ? body.openFinanceClientSecret.trim() : "",
-    openFinanceUserId: typeof body.openFinanceUserId === "string" ? body.openFinanceUserId.trim() : "",
-    openFinanceApiPrefix: typeof body.openFinanceApiPrefix === "string" && body.openFinanceApiPrefix.trim()
-      ? body.openFinanceApiPrefix.trim()
-      : "api",
-    aiProvider: provider,
-    aiApiKey: typeof body.aiApiKey === "string" ? body.aiApiKey.trim() : "",
-    aiModel:
-      typeof body.aiModel === "string" && body.aiModel.trim()
-        ? body.aiModel.trim()
-        : provider === "anthropic"
-          ? "claude-haiku-4-5"
-          : provider === "gemini"
-            ? "gemini-2.0-flash"
-            : "gpt-4o-mini",
-  };
-}
-
-function normalizeBudgetPreferences(body: Partial<typeof PREFS_DEFAULT>) {
-  const threshold = Number(body.highAmountThreshold);
-  const householdAge = Number(body.householdAge);
-  const householdSize = Number(body.householdSize);
-  const householdBirthDate =
-    typeof body.householdBirthDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.householdBirthDate)
-      ? body.householdBirthDate
-      : null;
-  return {
-    sectionOverrides: body.sectionOverrides && typeof body.sectionOverrides === "object" ? body.sectionOverrides : {},
-    oneTimeExpenses: Array.isArray(body.oneTimeExpenses) ? body.oneTimeExpenses : [],
-    fixedExpenses: Array.isArray(body.fixedExpenses) ? body.fixedExpenses : [],
-    highAmountThreshold: Number.isFinite(threshold) && threshold >= 0 ? threshold : PREFS_DEFAULT.highAmountThreshold,
-    householdBirthDate,
-    householdAge: Number.isFinite(householdAge) && householdAge > 0 ? householdAge : null,
-    householdSize: Number.isFinite(householdSize) && householdSize > 0 ? householdSize : null,
-    theme: body.theme === "dark" ? "dark" : "light",
-  };
-}
-
 interface AIAnalysisRequest extends AIAnalysisPayload {
   forceRefresh?: boolean;
   cacheOnly?: boolean;
@@ -190,6 +153,8 @@ function aiAnalysisCacheKey(settings: ServiceSettings, payload: AIAnalysisPayloa
 function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Content-Type-Options", "nosniff");
   res.end(JSON.stringify(body));
 }
 
@@ -229,7 +194,7 @@ async function verifyGoogleCredential(credential: string, clientId: string): Pro
   const payload = base64UrlJson<GooglePayload>(encodedPayload);
   if (header.alg !== "RS256" || !header.kid) throw new Error("Unsupported Google credential");
 
-  const certsRes = await fetch("https://www.googleapis.com/oauth2/v3/certs");
+  const certsRes = await fetchWithTimeout("https://www.googleapis.com/oauth2/v3/certs");
   if (!certsRes.ok) throw new Error(`Google certs failed (${certsRes.status})`);
   const certs = (await certsRes.json()) as { keys?: Array<JsonWebKey & { kid?: string }> };
   const jwk = certs.keys?.find((key) => key.kid === header.kid);
@@ -273,6 +238,9 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       token_hash TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       expires_at INTEGER NOT NULL,
+      pin_unlocked_at INTEGER,
+      pin_failures INTEGER NOT NULL DEFAULT 0,
+      pin_locked_until INTEGER,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS preferences (
@@ -299,12 +267,23 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       PRIMARY KEY (user_id, cache_key)
     );
   `);
+  const sessionColumns = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+  const sessionColumnNames = new Set(sessionColumns.map((column) => column.name));
+  if (!sessionColumnNames.has("pin_unlocked_at")) db.exec("ALTER TABLE sessions ADD COLUMN pin_unlocked_at INTEGER");
+  if (!sessionColumnNames.has("pin_failures")) db.exec("ALTER TABLE sessions ADD COLUMN pin_failures INTEGER NOT NULL DEFAULT 0");
+  if (!sessionColumnNames.has("pin_locked_until")) db.exec("ALTER TABLE sessions ADD COLUMN pin_locked_until INTEGER");
 
   const getUserBySession = db.prepare(`
     SELECT users.id, users.email, users.name, users.picture
     FROM sessions
     JOIN users ON users.id = sessions.user_id
     WHERE sessions.token_hash = ? AND sessions.expires_at > ?
+  `);
+  const getUnlockedUserBySession = db.prepare(`
+    SELECT users.id, users.email, users.name, users.picture
+    FROM sessions
+    JOIN users ON users.id = sessions.user_id
+    WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND sessions.pin_unlocked_at IS NOT NULL
   `);
   const upsertUser = db.prepare(`
     INSERT INTO users (id, email, name, picture, updated_at)
@@ -317,6 +296,18 @@ function preferencesAuth(env: Record<string, string>): Plugin {
   `);
   const insertSession = db.prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)");
   const deleteSession = db.prepare("DELETE FROM sessions WHERE token_hash = ?");
+  const unlockSession = db.prepare("UPDATE sessions SET pin_unlocked_at = ?, pin_failures = 0, pin_locked_until = NULL WHERE token_hash = ?");
+  const getPinAttemptState = db.prepare("SELECT pin_failures AS failures, pin_locked_until AS lockedUntil FROM sessions WHERE token_hash = ?");
+  const recordPinFailure = db.prepare(`
+    UPDATE sessions
+    SET
+      pin_failures = CASE WHEN pin_locked_until IS NOT NULL AND pin_locked_until <= ? THEN 1 ELSE pin_failures + 1 END,
+      pin_locked_until = CASE
+        WHEN (CASE WHEN pin_locked_until IS NOT NULL AND pin_locked_until <= ? THEN 1 ELSE pin_failures + 1 END) >= ? THEN ?
+        ELSE NULL
+      END
+    WHERE token_hash = ?
+  `);
   const getPrefs = db.prepare("SELECT data FROM preferences WHERE user_id = ?");
   const upsertPrefs = db.prepare(`
     INSERT INTO preferences (user_id, data, updated_at)
@@ -358,9 +349,21 @@ function preferencesAuth(env: Record<string, string>): Plugin {
         LIMIT 200
       )
   `);
+  const localRateLimits = new Map<string, { windowStart: number; count: number }>();
 
-  function pinHash(pin: string, salt: string): string {
-    return createHash("sha256").update(`${salt}:${pin}`).digest("hex");
+  function consumeLocalRateLimit(userId: string, action: string, limit: number, windowMs: number) {
+    const now = Date.now();
+    const windowStart = Math.floor(now / windowMs) * windowMs;
+    const key = `${userId}:${action}`;
+    const previous = localRateLimits.get(key);
+    const next = previous?.windowStart === windowStart
+      ? { windowStart, count: previous.count + 1 }
+      : { windowStart, count: 1 };
+    localRateLimits.set(key, next);
+    return {
+      allowed: next.count <= limit,
+      retryAfterSeconds: Math.max(1, Math.ceil((windowStart + windowMs - now) / 1000)),
+    };
   }
 
   function normalizePin(value: unknown): string {
@@ -371,6 +374,15 @@ function preferencesAuth(env: Record<string, string>): Plugin {
     const token = bearerToken(req);
     if (!token) return null;
     return getUserBySession.get(tokenHash(token), Date.now()) as
+      | { id: string; email: string; name: string; picture: string }
+      | undefined
+      | null;
+  }
+
+  function currentUnlockedUser(req: IncomingMessage) {
+    const token = bearerToken(req);
+    if (!token) return null;
+    return getUnlockedUserBySession.get(tokenHash(token), Date.now()) as
       | { id: string; email: string; name: string; picture: string }
       | undefined
       | null;
@@ -405,7 +417,7 @@ function preferencesAuth(env: Record<string, string>): Plugin {
           };
           upsertUser.run(user.id, user.email, user.name, user.picture);
           const token = randomBytes(32).toString("base64url");
-          const maxAge = 60 * 60 * 24 * 30;
+          const maxAge = 60 * 60 * 12;
           insertSession.run(tokenHash(token), user.id, Date.now() + maxAge * 1000);
           sendJson(res, 200, { user, token });
         })
@@ -428,15 +440,15 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       }
       if (req.method === "GET") {
         const row = getPrefs.get(user.id) as { data: string } | undefined;
-        sendJson(res, 200, row ? normalizeBudgetPreferences(JSON.parse(row.data)) : PREFS_DEFAULT);
+        sendJson(res, 200, row ? normalizePreferences(JSON.parse(row.data)) : PREFS_DEFAULT);
         return;
       }
       if (req.method === "PUT" || req.method === "PATCH") {
         readBody(req)
           .then((raw) => {
             const row = getPrefs.get(user.id) as { data: string } | undefined;
-            const base = req.method === "PATCH" && row ? normalizeBudgetPreferences(JSON.parse(row.data)) : PREFS_DEFAULT;
-            const prefs = normalizeBudgetPreferences({ ...base, ...JSON.parse(raw) });
+            const base = req.method === "PATCH" && row ? normalizePreferences(JSON.parse(row.data)) : PREFS_DEFAULT;
+            const prefs = normalizePreferences({ ...base, ...JSON.parse(raw) });
             upsertPrefs.run(user.id, JSON.stringify(prefs));
             sendJson(res, 200, prefs);
           })
@@ -446,14 +458,15 @@ function preferencesAuth(env: Record<string, string>): Plugin {
     }
 
     if (url.pathname === "/api/service-settings") {
-      const user = currentUser(req);
+      const user = currentUnlockedUser(req);
       if (!user) {
         sendJson(res, 401, { error: "AUTH_REQUIRED" });
         return;
       }
       if (req.method === "GET") {
         const row = getServiceSettings.get(user.id) as { data: string } | undefined;
-        sendJson(res, 200, row ? normalizeServiceSettings(JSON.parse(row.data)) : EMPTY_SERVICE_SETTINGS);
+        const settings = row ? normalizeServiceSettings(JSON.parse(row.data)) : EMPTY_SERVICE_SETTINGS;
+        sendJson(res, 200, publicServiceSettings(settings));
         return;
       }
       if (req.method === "PUT" || req.method === "PATCH") {
@@ -463,7 +476,7 @@ function preferencesAuth(env: Record<string, string>): Plugin {
             const base = req.method === "PATCH" && row ? normalizeServiceSettings(JSON.parse(row.data)) : EMPTY_SERVICE_SETTINGS;
             const settings = normalizeServiceSettings({ ...base, ...JSON.parse(raw) });
             upsertServiceSettings.run(user.id, JSON.stringify(settings));
-            sendJson(res, 200, settings);
+            sendJson(res, 200, publicServiceSettings(settings));
           })
           .catch((err: unknown) => sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) }));
         return;
@@ -471,7 +484,7 @@ function preferencesAuth(env: Record<string, string>): Plugin {
     }
 
     if (url.pathname === "/api/ai-analysis" && req.method === "POST") {
-      const user = currentUser(req);
+      const user = currentUnlockedUser(req);
       if (!user) {
         sendJson(res, 401, { error: "AUTH_REQUIRED" });
         return;
@@ -482,6 +495,7 @@ function preferencesAuth(env: Record<string, string>): Plugin {
         .then(async (raw) => {
           const body = JSON.parse(raw) as AIAnalysisRequest;
           const { forceRefresh, cacheOnly, ...payload } = body;
+          if (!isValidAIAnalysisPayload(payload)) throw new Error("INVALID_AI_ANALYSIS_PAYLOAD");
           const cacheKey = aiAnalysisCacheKey(settings, payload);
 
           if (!forceRefresh) {
@@ -503,6 +517,11 @@ function preferencesAuth(env: Record<string, string>): Plugin {
             };
           }
 
+          const rateLimit = consumeLocalRateLimit(user.id, "ai-analysis", 12, 60 * 60 * 1000);
+          if (!rateLimit.allowed) {
+            throw new Error("AI_RATE_LIMITED");
+          }
+
           const result = await analyzeBudget(settings, payload);
           const saved = upsertAIAnalysisCache.get(user.id, cacheKey, JSON.stringify(result)) as { updatedAt: string } | undefined;
           trimAIAnalysisCache.run(user.id, user.id);
@@ -513,18 +532,26 @@ function preferencesAuth(env: Record<string, string>): Plugin {
           };
         })
         .then((analysis) => sendJson(res, 200, analysis))
-        .catch((err: unknown) => sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) }));
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          sendJson(res, message === "AI_RATE_LIMITED" ? 429 : 502, { error: message });
+        });
       return;
     }
 
     if (url.pathname === "/api/ai-models" && req.method === "POST") {
-      const user = currentUser(req);
+      const user = currentUnlockedUser(req);
       if (!user) {
         sendJson(res, 401, { error: "AUTH_REQUIRED" });
         return;
       }
       const row = getServiceSettings.get(user.id) as { data: string } | undefined;
       const saved = row ? normalizeServiceSettings(JSON.parse(row.data)) : EMPTY_SERVICE_SETTINGS;
+      const rateLimit = consumeLocalRateLimit(user.id, "ai-models", 30, 60 * 60 * 1000);
+      if (!rateLimit.allowed) {
+        sendJson(res, 429, { error: "AI_RATE_LIMITED", retryAfterSeconds: rateLimit.retryAfterSeconds });
+        return;
+      }
       readBody(req)
         .then((raw) => {
           const body = JSON.parse(raw) as Partial<Pick<ServiceSettings, "aiProvider" | "aiApiKey">>;
@@ -556,7 +583,9 @@ function preferencesAuth(env: Record<string, string>): Plugin {
               return;
             }
             const salt = randomBytes(16).toString("hex");
-            upsertPinCredential.run(user.id, salt, pinHash(pin, salt));
+            upsertPinCredential.run(user.id, salt, hashPin(pin, salt));
+            const token = bearerToken(req);
+            if (token) unlockSession.run(Date.now(), tokenHash(token));
             sendJson(res, 200, { ok: true });
           })
           .catch((err: unknown) => sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) }));
@@ -567,7 +596,34 @@ function preferencesAuth(env: Record<string, string>): Plugin {
           .then((raw) => {
             const pin = normalizePin(JSON.parse(raw).pin);
             const stored = getPinCredential.get(user.id) as { salt: string; pinHash: string } | undefined;
-            sendJson(res, 200, { ok: Boolean(stored && pin.length === 4 && pinHash(pin, stored.salt) === stored.pinHash) });
+            const token = bearerToken(req);
+            if (!token) {
+              sendJson(res, 401, { error: "AUTH_REQUIRED" });
+              return;
+            }
+            const sessionHash = tokenHash(token);
+            const now = Date.now();
+            const state = getPinAttemptState.get(sessionHash) as { failures: number; lockedUntil: number | null } | undefined;
+            if (state?.lockedUntil && state.lockedUntil > now) {
+              const retryAfterSeconds = Math.max(1, Math.ceil((state.lockedUntil - now) / 1000));
+              res.setHeader("Retry-After", String(retryAfterSeconds));
+              sendJson(res, 429, { error: "PIN_RATE_LIMITED", retryAfterSeconds });
+              return;
+            }
+            const verification = stored && pin.length === 4
+              ? verifyPinHash(pin, stored.salt, stored.pinHash)
+              : { ok: false, needsUpgrade: false };
+            if (!verification.ok) {
+              const lockUntil = now + 5 * 60 * 1000;
+              recordPinFailure.run(now, now, 5, lockUntil, sessionHash);
+              sendJson(res, 200, { ok: false });
+              return;
+            }
+            if (verification.needsUpgrade && stored) {
+              upsertPinCredential.run(user.id, stored.salt, hashPin(pin, stored.salt));
+            }
+            unlockSession.run(now, sessionHash);
+            sendJson(res, 200, { ok: true });
           })
           .catch((err: unknown) => sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) }));
         return;
@@ -602,21 +658,21 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     );
   `);
 
-  const getUserBySession = db.prepare(`
+  const getUnlockedUserBySession = db.prepare(`
     SELECT users.id, users.email, users.name, users.picture
     FROM sessions
     JOIN users ON users.id = sessions.user_id
-    WHERE sessions.token_hash = ? AND sessions.expires_at > ?
+    WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND sessions.pin_unlocked_at IS NOT NULL
   `);
   const getServiceSettings = db.prepare("SELECT data FROM service_settings WHERE user_id = ?");
 
   const tokens = new Map<string, { value: string; expiresAt: number }>();
   const pendingTokens = new Map<string, Promise<string>>();
 
-  function currentUser(req: IncomingMessage) {
+  function currentUnlockedUser(req: IncomingMessage) {
     const token = bearerToken(req);
     if (!token) return null;
-    return getUserBySession.get(tokenHash(token), Date.now()) as
+    return getUnlockedUserBySession.get(tokenHash(token), Date.now()) as
       | { id: string; email: string; name: string; picture: string }
       | undefined
       | null;
@@ -639,7 +695,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     if (pending) return pending;
 
     const request = (async () => {
-      const res = await fetch(TOKEN_URL, {
+      const res = await fetchWithTimeout(TOKEN_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -649,7 +705,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
         }),
       });
       if (!res.ok) {
-        throw new Error(`Token request failed (${res.status}): ${await res.text()}`);
+        throw new Error(`Token request failed (${res.status})`);
       }
       const body = (await res.json()) as { accessToken?: string; expiresIn?: number };
       if (!body.accessToken) throw new Error("Token response did not include an access token");
@@ -684,15 +740,15 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
         seenPages.add(nextPage);
       }
       if (seenPages.size > 100) throw new Error("Transactions pagination exceeded 100 pages");
-      const url = new URL(`https://${settings.openFinanceApiPrefix}.open-finance.ai/v2/data/transactions`);
+      const url = openFinanceApiUrl(settings.openFinanceApiPrefix, "/v2/data/transactions");
       url.searchParams.set("dateFrom", from);
       url.searchParams.set("dateTo", to);
       url.searchParams.set("sort", "1");
       url.searchParams.set("type", providerType);
       if (nextPage) url.searchParams.set("nextPage", nextPage);
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
       if (!res.ok) {
-        throw new Error(`Transactions request failed (${res.status}): ${await res.text()}`);
+        throw new Error(`Transactions request failed (${res.status})`);
       }
       const body = (await res.json()) as { nextPage?: string | null; items?: RawTransaction[] };
       items.push(...(body.items ?? []));
@@ -960,11 +1016,11 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
         seenPages.add(nextPage);
       }
       if (seenPages.size > 100) throw new Error("Accounts pagination exceeded 100 pages");
-      const url = new URL(`https://${settings.openFinanceApiPrefix}.open-finance.ai/v2/data/accounts`);
+      const url = openFinanceApiUrl(settings.openFinanceApiPrefix, "/v2/data/accounts");
       if (nextPage) url.searchParams.set("nextPage", nextPage);
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
       if (!res.ok) {
-        throw new Error(`Accounts request failed (${res.status}): ${await res.text()}`);
+        throw new Error(`Accounts request failed (${res.status})`);
       }
       const body = (await res.json()) as { nextPage?: string | null; items?: RawAccount[] };
       items.push(...(body.items ?? []));
@@ -977,7 +1033,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     if (url.pathname === "/api/status") {
-      const user = currentUser(req);
+      const user = currentUnlockedUser(req);
       if (!user) {
         sendJson(res, 200, { configured: false });
         return;
@@ -987,7 +1043,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     }
 
     if (url.pathname === "/api/accounts") {
-      const user = currentUser(req);
+      const user = currentUnlockedUser(req);
       const settings = user ? settingsForUser(user.id) : EMPTY_SERVICE_SETTINGS;
       if (!user || !isConfigured(settings)) {
         sendJson(res, 503, { error: "NOT_CONFIGURED" });
@@ -1022,7 +1078,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
         res.end("Method Not Allowed");
         return;
       }
-      const user = currentUser(req);
+      const user = currentUnlockedUser(req);
       const settings = user ? settingsForUser(user.id) : EMPTY_SERVICE_SETTINGS;
       if (!user || !isConfigured(settings)) {
         sendJson(res, 503, { error: "NOT_CONFIGURED" });
@@ -1088,6 +1144,12 @@ export default defineConfig(({ mode, command }) => {
                 target: remoteApiOrigin,
                 changeOrigin: true,
                 secure: true,
+                configure(proxy) {
+                  proxy.on("proxyRes", (proxyRes) => {
+                    proxyRes.headers["cache-control"] = "no-store";
+                    proxyRes.headers["x-content-type-options"] = "nosniff";
+                  });
+                },
               },
             },
           }

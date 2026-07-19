@@ -1,7 +1,7 @@
 import type { ApiRequest, ApiResponse } from "../server/http.js";
 import { getQueryParam, sendJson } from "../server/http.js";
 import { getTransactions, isOpenFinanceConfigured } from "../server/openFinance.js";
-import { currentUser } from "../server/auth.js";
+import { currentUnlockedUser } from "../server/auth.js";
 import { getServiceSettings } from "../server/db.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
@@ -25,9 +25,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   }
 
   try {
-    const user = await currentUser(req);
+    const user = await currentUnlockedUser(req);
     if (!user) {
-      sendJson(res, 401, { error: "AUTH_REQUIRED" });
+      sendJson(res, 401, { error: "PIN_REQUIRED" });
       return;
     }
     const settings = await getServiceSettings(user.id);

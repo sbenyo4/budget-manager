@@ -1,4 +1,5 @@
 import type { ServiceSettings } from "./db.js";
+import { fetchWithTimeout } from "./fetchWithTimeout.js";
 
 export interface AIAnalysisPayload {
   analysisMode?: "month" | "trend";
@@ -85,7 +86,7 @@ function isSavingsTx(tx: CompactTransaction): boolean {
 }
 
 function isConsumptionTx(tx: CompactTransaction): boolean {
-  return !isCardDebit(tx) && !isSavingsTx(tx) && tx.categoryMain !== "TRANSFER" && tx.categoryMain !== "DEPOSIT";
+  return !isCardDebit(tx) && !isSavingsTx(tx);
 }
 
 function isBudgetIncomeTx(tx: CompactTransaction): boolean {
@@ -269,8 +270,9 @@ function parseResult(text: string): AIAnalysisResult {
     ? trimmed
     : trimmed.slice(trimmed.indexOf("{"), trimmed.lastIndexOf("}") + 1);
   const parsed = JSON.parse(jsonText) as Partial<AIAnalysisResult>;
+  const parsedScore = Number(parsed.score ?? 0);
   return {
-    score: Math.max(0, Math.min(100, Number(parsed.score ?? 0))),
+    score: Number.isFinite(parsedScore) ? Math.max(0, Math.min(100, parsedScore)) : 0,
     summary: typeof parsed.summary === "string" ? parsed.summary : "",
     strengths: Array.isArray(parsed.strengths) ? parsed.strengths.map(String).slice(0, 6) : [],
     risks: Array.isArray(parsed.risks) ? parsed.risks.map(String).slice(0, 6) : [],
@@ -279,7 +281,7 @@ function parseResult(text: string): AIAnalysisResult {
 }
 
 async function callOpenAI(settings: ServiceSettings, prompt: string): Promise<string> {
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+  const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${settings.aiApiKey}`,
@@ -303,7 +305,7 @@ async function callAnthropic(settings: ServiceSettings, prompt: string): Promise
       ? settings.aiModel
       : MODEL_FALLBACKS.anthropic;
   const request = (selectedModel: string) =>
-    fetch("https://api.anthropic.com/v1/messages", {
+    fetchWithTimeout("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "x-api-key": settings.aiApiKey,
@@ -328,7 +330,7 @@ async function callAnthropic(settings: ServiceSettings, prompt: string): Promise
 
 async function callGemini(settings: ServiceSettings, prompt: string): Promise<string> {
   const model = (settings.aiModel || MODEL_FALLBACKS.gemini).replace(/^models\//, "");
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(settings.aiApiKey)}`,
     {
       method: "POST",

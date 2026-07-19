@@ -1,9 +1,10 @@
 import type { ApiRequest, ApiResponse } from "../server/http.js";
 import { readJson, sendJson } from "../server/http.js";
-import { currentUser } from "../server/auth.js";
+import { currentUnlockedUser } from "../server/auth.js";
 import { createHash } from "node:crypto";
-import { getAIAnalysisCache, getServiceSettings, upsertAIAnalysisCache } from "../server/db.js";
+import { consumeRateLimit, getAIAnalysisCache, getServiceSettings, upsertAIAnalysisCache } from "../server/db.js";
 import { analyzeBudget, type AIAnalysisPayload, type AIAnalysisResult } from "../server/aiAnalysis.js";
+import { isValidAIAnalysisPayload } from "../server/aiPayload.js";
 
 const AI_ANALYSIS_CACHE_VERSION = "ai-analysis-cache-v2";
 
@@ -44,14 +45,18 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   }
 
   try {
-    const user = await currentUser(req);
+    const user = await currentUnlockedUser(req);
     if (!user) {
-      sendJson(res, 401, { error: "AUTH_REQUIRED" });
+      sendJson(res, 401, { error: "PIN_REQUIRED" });
       return;
     }
     const settings = await getServiceSettings(user.id);
     const body = await readJson<AIAnalysisRequest>(req);
     const { forceRefresh, cacheOnly, ...payload } = body;
+    if (!isValidAIAnalysisPayload(payload)) {
+      sendJson(res, 400, { error: "INVALID_AI_ANALYSIS_PAYLOAD" });
+      return;
+    }
     const cacheKey = cacheKeyFor(settings, payload);
 
     if (!forceRefresh) {
@@ -64,6 +69,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
     if (cacheOnly) {
       sendJson(res, 200, { result: null, cached: false, updatedAt: null });
+      return;
+    }
+
+    const rateLimit = await consumeRateLimit(user.id, "ai-analysis", 12, 60 * 60 * 1000);
+    if (!rateLimit.allowed) {
+      res.setHeader("Retry-After", String(rateLimit.retryAfterSeconds));
+      sendJson(res, 429, { error: "AI_RATE_LIMITED", retryAfterSeconds: rateLimit.retryAfterSeconds });
       return;
     }
 

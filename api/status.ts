@@ -1,12 +1,12 @@
 import type { ApiRequest, ApiResponse } from "../server/http.js";
 import { sendJson } from "../server/http.js";
 import { isOpenFinanceConfigured } from "../server/openFinance.js";
-import { currentUser } from "../server/auth.js";
+import { currentUnlockedUser } from "../server/auth.js";
 import { getServiceSettings } from "../server/db.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {
-    const user = await currentUser(req);
+    const user = await currentUnlockedUser(req);
     if (!user) {
       sendJson(res, 200, { configured: false });
       return;

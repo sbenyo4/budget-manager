@@ -1,4 +1,5 @@
 import type { ServiceSettings } from "./db.js";
+import { fetchWithTimeout } from "./fetchWithTimeout.js";
 
 export type AIProvider = ServiceSettings["aiProvider"];
 
@@ -63,7 +64,7 @@ export async function listAIModels(provider: AIProvider, apiKey: string): Promis
   if (!apiKey) return FALLBACK_MODELS[provider];
 
   if (provider === "openai") {
-    const res = await fetch("https://api.openai.com/v1/models", {
+    const res = await fetchWithTimeout("https://api.openai.com/v1/models", {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     if (!res.ok) throw new Error(`OpenAI models request failed (${res.status}): ${await res.text()}`);
@@ -78,7 +79,7 @@ export async function listAIModels(provider: AIProvider, apiKey: string): Promis
       const url = new URL("https://api.anthropic.com/v1/models");
       url.searchParams.set("limit", "100");
       if (afterId) url.searchParams.set("after_id", afterId);
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         headers: {
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
@@ -97,7 +98,7 @@ export async function listAIModels(provider: AIProvider, apiKey: string): Promis
     return uniqueModels(models, FALLBACK_MODELS.anthropic);
   }
 
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`
   );
   if (!res.ok) throw new Error(`Gemini models request failed (${res.status}): ${await res.text()}`);
