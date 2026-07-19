@@ -12,7 +12,7 @@ import { openFinanceApiUrl } from "./server/openFinanceEndpoint";
 import { normalizeServiceSettings, publicServiceSettings } from "./server/serviceSettings";
 import { hashPin, verifyPinHash } from "./server/pinSecurity";
 import { fetchWithTimeout } from "./server/fetchWithTimeout";
-import { normalizePreferences } from "./server/preferences";
+import { normalizePreferences, normalizePreferencesPatch } from "./server/preferences";
 import { isValidAIAnalysisPayload } from "./server/aiPayload";
 
 /**
@@ -35,6 +35,7 @@ const PREFS_DEFAULT = {
   householdBirthDate: null as string | null,
   householdAge: null as number | null,
   householdSize: null as number | null,
+  autoLogoutMinutes: 5,
   theme: "light" as "light" | "dark",
 };
 const require = createRequire(import.meta.url);
@@ -448,7 +449,10 @@ function preferencesAuth(env: Record<string, string>): Plugin {
           .then((raw) => {
             const row = getPrefs.get(user.id) as { data: string } | undefined;
             const base = req.method === "PATCH" && row ? normalizePreferences(JSON.parse(row.data)) : PREFS_DEFAULT;
-            const prefs = normalizePreferences({ ...base, ...JSON.parse(raw) });
+            const body = JSON.parse(raw);
+            const prefs = req.method === "PATCH"
+              ? { ...base, ...normalizePreferencesPatch(body) }
+              : normalizePreferences(body);
             upsertPrefs.run(user.id, JSON.stringify(prefs));
             sendJson(res, 200, prefs);
           })

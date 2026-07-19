@@ -15,6 +15,7 @@ export interface BudgetPreferences {
   householdBirthDate: string | null;
   householdAge: number | null;
   householdSize: number | null;
+  autoLogoutMinutes: number;
   theme: "light" | "dark";
 }
 
@@ -36,6 +37,7 @@ export const emptyPreferences: BudgetPreferences = {
   householdBirthDate: null,
   householdAge: null,
   householdSize: null,
+  autoLogoutMinutes: 5,
   theme: "light",
 };
 
@@ -48,6 +50,27 @@ export const emptyServiceSettings: ServiceSettings = {
   aiApiKey: "",
   aiModel: "gpt-4o-mini",
 };
+
+let lastKnownPreferences = emptyPreferences;
+
+function normalizeClientPreferences(value: Partial<BudgetPreferences>): BudgetPreferences {
+  return {
+    ...emptyPreferences,
+    ...value,
+    sectionOverrides:
+      value.sectionOverrides && typeof value.sectionOverrides === "object" && !Array.isArray(value.sectionOverrides)
+        ? value.sectionOverrides
+        : emptyPreferences.sectionOverrides,
+    oneTimeExpenses: Array.isArray(value.oneTimeExpenses) ? value.oneTimeExpenses : emptyPreferences.oneTimeExpenses,
+    fixedExpenses: Array.isArray(value.fixedExpenses) ? value.fixedExpenses : emptyPreferences.fixedExpenses,
+    autoLogoutMinutes:
+      Number.isInteger(value.autoLogoutMinutes) &&
+      Number(value.autoLogoutMinutes) >= 1 &&
+      Number(value.autoLogoutMinutes) <= 1_440
+        ? Number(value.autoLogoutMinutes)
+        : emptyPreferences.autoLogoutMinutes,
+  };
+}
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await authFetch(url, {
@@ -88,30 +111,34 @@ export async function loginWithGoogle(credential: string): Promise<{ user: AuthU
   return { user: result.user };
 }
 
-export async function logout(): Promise<{ ok: true }> {
-  try {
-    return await apiJson("/api/auth/logout", { method: "POST", body: "{}" });
-  } finally {
-    setAuthToken("");
-  }
+export function logout(): Promise<{ ok: true }> {
+  const request = apiJson<{ ok: true }>("/api/auth/logout", { method: "POST", body: "{}" });
+  setAuthToken("");
+  lastKnownPreferences = emptyPreferences;
+  return request;
 }
 
-export function loadPreferences(): Promise<BudgetPreferences> {
-  return apiJson("/api/preferences");
+export async function loadPreferences(): Promise<BudgetPreferences> {
+  lastKnownPreferences = normalizeClientPreferences(await apiJson<Partial<BudgetPreferences>>("/api/preferences"));
+  return lastKnownPreferences;
 }
 
-export function savePreferences(preferences: BudgetPreferences): Promise<BudgetPreferences> {
-  return apiJson("/api/preferences", {
+export async function savePreferences(preferences: BudgetPreferences): Promise<BudgetPreferences> {
+  const saved = await apiJson<Partial<BudgetPreferences>>("/api/preferences", {
     method: "PUT",
     body: JSON.stringify(preferences),
   });
+  lastKnownPreferences = normalizeClientPreferences({ ...preferences, ...saved });
+  return lastKnownPreferences;
 }
 
-export function patchPreferences(preferences: Partial<BudgetPreferences>): Promise<BudgetPreferences> {
-  return apiJson("/api/preferences", {
+export async function patchPreferences(preferences: Partial<BudgetPreferences>): Promise<BudgetPreferences> {
+  const saved = await apiJson<Partial<BudgetPreferences>>("/api/preferences", {
     method: "PATCH",
     body: JSON.stringify(preferences),
   });
+  lastKnownPreferences = normalizeClientPreferences({ ...lastKnownPreferences, ...saved, ...preferences });
+  return lastKnownPreferences;
 }
 
 export function loadServiceSettings(): Promise<ServiceSettings> {

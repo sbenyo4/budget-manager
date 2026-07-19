@@ -1,8 +1,8 @@
 import type { ApiRequest, ApiResponse } from "../server/http.js";
 import { readJson, sendJson } from "../server/http.js";
 import { currentUser } from "../server/auth.js";
-import { PREFS_DEFAULT, getPreferences, upsertPreferences, type BudgetPreferences } from "../server/db.js";
-import { normalizePreferences } from "../server/preferences.js";
+import { getPreferences, patchStoredPreferences, upsertPreferences, type BudgetPreferences } from "../server/db.js";
+import { normalizePreferences, normalizePreferencesPatch } from "../server/preferences.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {
@@ -17,10 +17,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return;
     }
 
-    if (req.method === "PUT" || req.method === "PATCH") {
+    if (req.method === "PATCH") {
       const body = await readJson<Partial<BudgetPreferences>>(req);
-      const base = req.method === "PATCH" ? await getPreferences(user.id) : PREFS_DEFAULT;
-      const prefs = normalizePreferences({ ...base, ...body });
+      sendJson(res, 200, await patchStoredPreferences(user.id, normalizePreferencesPatch(body)));
+      return;
+    }
+
+    if (req.method === "PUT") {
+      const body = await readJson<Partial<BudgetPreferences>>(req);
+      const prefs = normalizePreferences(body);
       await upsertPreferences(user.id, prefs);
       sendJson(res, 200, prefs);
       return;

@@ -15,6 +15,7 @@ export interface BudgetPreferences {
   householdBirthDate: string | null;
   householdAge: number | null;
   householdSize: number | null;
+  autoLogoutMinutes: number;
   theme: "light" | "dark";
 }
 
@@ -41,6 +42,7 @@ export const PREFS_DEFAULT: BudgetPreferences = {
   householdBirthDate: null,
   householdAge: null,
   householdSize: null,
+  autoLogoutMinutes: 5,
   theme: "light",
 };
 
@@ -258,6 +260,23 @@ export async function upsertPreferences(userId: string, prefs: BudgetPreferences
       data = EXCLUDED.data,
       updated_at = NOW()
   `;
+}
+
+export async function patchStoredPreferences(
+  userId: string,
+  patch: Partial<BudgetPreferences>
+): Promise<BudgetPreferences> {
+  await ensureSchema();
+  const inserted = { ...PREFS_DEFAULT, ...patch };
+  const rows = (await sql()`
+    INSERT INTO preferences (user_id, data, updated_at)
+    VALUES (${userId}, ${JSON.stringify(inserted)}::jsonb, NOW())
+    ON CONFLICT (user_id) DO UPDATE SET
+      data = preferences.data || ${JSON.stringify(patch)}::jsonb,
+      updated_at = NOW()
+    RETURNING data
+  `) as Array<{ data: BudgetPreferences }>;
+  return { ...PREFS_DEFAULT, ...(rows[0]?.data ?? {}) };
 }
 
 export async function getServiceSettings(userId: string): Promise<ServiceSettings> {

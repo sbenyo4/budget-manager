@@ -25,10 +25,15 @@ import type { Transaction } from "./types";
 import { MonthlyView } from "./components/MonthlyView";
 import { TrendsView } from "./components/TrendsView";
 import { AIAnalysisView } from "./components/AIAnalysisView";
+import { useAutoLogout } from "./hooks/useAutoLogout";
 
 type ThemeMode = "light" | "dark";
 type PinGateMode = "checking" | "setup" | "locked" | "unlocked" | "unavailable";
 type AppView = "monthly" | "trends" | "ai";
+type SettingsPreferences = Pick<
+  BudgetPreferences,
+  "highAmountThreshold" | "householdBirthDate" | "householdAge" | "householdSize" | "autoLogoutMinutes"
+>;
 
 function readInitialTheme(): ThemeMode {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -112,6 +117,7 @@ function changedPreferences(previous: BudgetPreferences, next: BudgetPreferences
   if (previous.householdBirthDate !== next.householdBirthDate) patch.householdBirthDate = next.householdBirthDate;
   if (previous.householdAge !== next.householdAge) patch.householdAge = next.householdAge;
   if (previous.householdSize !== next.householdSize) patch.householdSize = next.householdSize;
+  if (previous.autoLogoutMinutes !== next.autoLogoutMinutes) patch.autoLogoutMinutes = next.autoLogoutMinutes;
   if (previous.theme !== next.theme) patch.theme = next.theme;
   if (JSON.stringify(previous.sectionOverrides) !== JSON.stringify(next.sectionOverrides)) {
     patch.sectionOverrides = next.sectionOverrides;
@@ -386,6 +392,7 @@ function BudgetApp() {
     setPreferencesLoading(false);
     migratePreferencesIfNeeded(nextPrefs)
       .then((saved) => {
+        preferencesRef.current = saved;
         setPreferences(saved);
         setTheme(saved.theme);
       })
@@ -397,25 +404,26 @@ function BudgetApp() {
   }, []);
 
   const handleLogout = useCallback(() => {
-    logout()
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => {
-        setUser(null);
-        setPinGate("checking");
-        setAllTransactions([]);
-        setBankBalance(null);
-        setPreferences(emptyPreferences);
-        setServiceSettings(emptyServiceSettings);
-      });
+    const request = logout();
+    setUser(null);
+    setPinGate("checking");
+    setAllTransactions([]);
+    setBankBalance(null);
+    setPreferences(emptyPreferences);
+    setServiceSettings(emptyServiceSettings);
+    request.catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
+
+  useAutoLogout(Boolean(user), preferences.autoLogoutMinutes, handleLogout);
 
   const handleServiceSettingsSave = useCallback((
     settings: ServiceSettings,
-    profile: Pick<BudgetPreferences, "highAmountThreshold" | "householdBirthDate" | "householdAge" | "householdSize">
+    profile: SettingsPreferences
   ) => {
-    const nextPreferences = { ...preferences, ...profile };
+    const currentPreferences = preferencesRef.current;
+    const nextPreferences = { ...currentPreferences, ...profile };
     const servicePatch = changedServiceSettings(serviceSettings, settings);
-    const preferencesPatch = changedPreferences(preferences, nextPreferences);
+    const preferencesPatch = changedPreferences(currentPreferences, nextPreferences);
     const combinedPreferencesPatch = { ...pendingPreferencesPatchRef.current, ...preferencesPatch };
     const shouldSaveService = hasPatchValue(servicePatch);
     const shouldSavePreferences = hasPatchValue(combinedPreferencesPatch);
@@ -442,7 +450,7 @@ function BudgetApp() {
     }
     const preferencesSaveRequest = shouldSavePreferences
       ? preferencesSaveQueueRef.current.then(() => patchPreferences(combinedPreferencesPatch))
-      : Promise.resolve(preferences);
+      : Promise.resolve(currentPreferences);
     if (shouldSavePreferences) {
       preferencesSaveQueueRef.current = preferencesSaveRequest.then(() => undefined, () => undefined);
     }
@@ -470,7 +478,7 @@ function BudgetApp() {
         setError(message);
         throw new Error(message);
       });
-  }, [preferences, serviceSettings, serviceSettingsRequired]);
+  }, [serviceSettings, serviceSettingsRequired]);
 
   const handleManualDataReload = useCallback(() => {
     setError(null);
@@ -713,13 +721,14 @@ function ServiceSettingsModal({
   onClose: () => void;
   onSave: (
     settings: ServiceSettings,
-    profile: Pick<BudgetPreferences, "highAmountThreshold" | "householdBirthDate" | "householdAge" | "householdSize">
+    profile: SettingsPreferences
   ) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<ServiceSettings>(settings);
   const [highAmountThreshold, setHighAmountThreshold] = useState(String(preferences.highAmountThreshold));
   const [householdBirthDate, setHouseholdBirthDate] = useState(preferences.householdBirthDate ?? "");
   const [householdSize, setHouseholdSize] = useState(preferences.householdSize ? String(preferences.householdSize) : "");
+  const [autoLogoutMinutes, setAutoLogoutMinutes] = useState(String(preferences.autoLogoutMinutes));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [showSecret, setShowSecret] = useState(false);
@@ -734,7 +743,13 @@ function ServiceSettingsModal({
     setHighAmountThreshold(String(preferences.highAmountThreshold));
     setHouseholdBirthDate(preferences.householdBirthDate ?? "");
     setHouseholdSize(preferences.householdSize ? String(preferences.householdSize) : "");
-  }, [preferences.highAmountThreshold, preferences.householdBirthDate, preferences.householdSize]);
+    setAutoLogoutMinutes(String(preferences.autoLogoutMinutes));
+  }, [
+    preferences.autoLogoutMinutes,
+    preferences.highAmountThreshold,
+    preferences.householdBirthDate,
+    preferences.householdSize,
+  ]);
 
   const updateField = (key: keyof ServiceSettings, value: string) => {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -817,6 +832,7 @@ function ServiceSettingsModal({
     setMessage("");
     const threshold = Number(highAmountThreshold);
     const size = Number(householdSize);
+    const logoutMinutes = Number(autoLogoutMinutes);
     const birthDate = householdBirthDate || null;
     const age = birthDate ? calculateAgeFromBirthDate(birthDate) : preferences.householdAge;
     onSave(draft, {
@@ -824,6 +840,8 @@ function ServiceSettingsModal({
       householdBirthDate: birthDate,
       householdAge: age,
       householdSize: Number.isFinite(size) && size > 0 ? size : null,
+      autoLogoutMinutes:
+        Number.isInteger(logoutMinutes) && logoutMinutes >= 1 && logoutMinutes <= 1_440 ? logoutMinutes : 5,
     })
       .catch((err: unknown) => setMessage(err instanceof Error ? err.message : String(err)))
       .finally(() => setSaving(false));
@@ -984,6 +1002,18 @@ function ServiceSettingsModal({
                 value={householdSize}
                 onChange={(event) => setHouseholdSize(event.target.value)}
                 placeholder="לא חובה"
+              />
+            </label>
+            <label>
+              התנתקות אוטומטית לאחר חוסר פעילות (דקות)
+              <input
+                dir="ltr"
+                type="number"
+                min="1"
+                max="1440"
+                step="1"
+                value={autoLogoutMinutes}
+                onChange={(event) => setAutoLogoutMinutes(event.target.value)}
               />
             </label>
           </fieldset>
