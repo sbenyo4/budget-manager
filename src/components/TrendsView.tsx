@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { budgetDate, isConsumption, isSavings } from "../logic/flows";
+import { isRepeatedExpenseGroup } from "../logic/expenseRecurrence";
 import type { BudgetPreferences } from "../api/preferences";
 import { mainColor, subLabel } from "../logic/categoryNames";
 import {
@@ -99,7 +100,7 @@ function trendTxMatchesSearch(tx: Transaction, query: string): boolean {
 }
 
 function isRepeatVariableGroup(group: { count: number; periodKeys: Set<string> }): boolean {
-  return group.periodKeys.size >= 2;
+  return isRepeatedExpenseGroup(group.count, group.periodKeys.size);
 }
 
 function isFixedGroup(group: { count: number; periodKeys: Set<string>; recurring: boolean }): boolean {

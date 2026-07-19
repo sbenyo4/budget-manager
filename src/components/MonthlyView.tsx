@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { budgetDate, cardDebitCutoffs, isCardDebit, isCardTransactionCharged, isConsumption } from "../logic/flows";
+import { isRepeatedExpenseGroup } from "../logic/expenseRecurrence";
 import type { BudgetPreferences } from "../api/preferences";
 import { displaySubLabel, mainColor } from "../logic/categoryNames";
 import {
@@ -98,7 +99,7 @@ function periodKeyFor(date: string, periods: Period[]): string | null {
 }
 
 function isRepeatExpenseGroup(group: { count: number; periodKeys: Set<string> }): boolean {
-  return group.periodKeys.size >= 2;
+  return isRepeatedExpenseGroup(group.count, group.periodKeys.size);
 }
 
 function fixedExpenseKeysFor(
