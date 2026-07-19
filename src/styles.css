@@ -2357,7 +2357,7 @@ h1 {
 }
 
 .pending-chip {
-  margin-inline-start: 6px;
+  flex: 0 0 auto;
   background: var(--warning-wash);
   color: var(--text-primary);
 }

@@ -1262,12 +1262,22 @@ export function MonthlyView({
                     {installmentText(displayTx) && <span className="sub-label"> · {installmentText(displayTx)}</span>}
                     {displayTx.recurring && <span className="recurring-tag"> · מנוי / קבוע</span>}
                     {isCardDebit(tx) && allDebitDetails.length === 0 && isReportedPending && (
-                      <span className="sub-label"> · פירוט האשראי צפוי לאחר ביצוע החיוב</span>
+                      <span className="sub-label"> · החיוב דווח בסטטוס זמני והפירוט עשוי להתעדכן</span>
                     )}
                     {isCardDebit(tx) && allDebitDetails.length === 0 && !isReportedPending && (
                       <span className="sub-label"> · לא נמצא פירוט תואם בדיווח חברת האשראי</span>
                     )}
                       </span>
+                    {isReportedPending && (
+                      <span className="pending-chip" title="ספק הנתונים החזיר סטטוס PENDING; אין בכך ודאות שהחיוב טרם בוצע">
+                        ⏳ טרם סופי
+                      </span>
+                    )}
+                    {!isReportedPending && isPending(tx) && (
+                      <span className="pending-chip" title="עסקת אשראי שטרם חויבה בחשבון">
+                        ⏳ טרם חויב
+                      </span>
+                    )}
                     </span>
                   </td>
                   <td>
@@ -1326,8 +1336,6 @@ export function MonthlyView({
                   </td>
                   <td className="source-cell">
                     {sourceLabel && <span className={`source-chip ${sourceClass}`}>{highlightSearchText(sourceLabel, visibleSearchQuery)}</span>}
-                    {isReportedPending && <span className="pending-chip">⏳ ממתין לביצוע</span>}
-                    {!isReportedPending && isPending(tx) && <span className="pending-chip">⏳ טרם חויב</span>}
                   </td>
                   <td className={`num ${tx.type === "income" ? "net-positive" : ""}`}>
                     {tx.type === "income" ? "+" : "−"}{highlightSearchText(formatILS(tx.amount), visibleSearchQuery)}
