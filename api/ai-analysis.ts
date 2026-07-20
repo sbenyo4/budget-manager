@@ -6,7 +6,7 @@ import { consumeRateLimit, getAIAnalysisCache, getServiceSettings, upsertAIAnaly
 import { analyzeBudget, type AIAnalysisPayload, type AIAnalysisResult } from "../server/aiAnalysis.js";
 import { isValidAIAnalysisPayload } from "../server/aiPayload.js";
 
-const AI_ANALYSIS_CACHE_VERSION = "ai-analysis-cache-v2";
+const AI_ANALYSIS_CACHE_VERSION = "ai-analysis-cache-v7";
 
 interface AIAnalysisRequest extends AIAnalysisPayload {
   forceRefresh?: boolean;

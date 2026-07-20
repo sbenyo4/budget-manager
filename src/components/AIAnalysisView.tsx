@@ -3,19 +3,29 @@ import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { budgetDate, cardDebitCutoffs, isCardTransactionCharged, isConsumption, isSavings } from "../logic/flows";
 import { categoryLabel } from "../logic/categoryOverrides";
+import { fixedExpenseKey, fixedExpenseKeysFor } from "../logic/expenseScope";
+import { medianAmount, scoreIncomeTransactions } from "../logic/incomeBasis";
 import { analyzeBudgetWithAI, type AIAnalysisResult, type BudgetPreferences } from "../api/preferences";
 import { formatILSWhole, todayIso } from "./format";
 
 interface Props {
   transactions: Transaction[];
   periods: Period[];
-  bankBalance: { balance: number; date: string } | null;
   preferences: BudgetPreferences;
 }
 
 const sum = (txs: Transaction[]) => txs.reduce((total, tx) => total + tx.amount, 0);
 type AnalysisMode = "month" | "trend";
 const NON_FLOW_MAINS = new Set(["TRADING", "TRANSFER", "ASSETS", "DEPOSIT"]);
+
+function aiErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === "AI_API_KEY_REQUIRED") return "חסר מפתח AI בהגדרות השירותים";
+  if (message.includes("UPSTREAM_TIMEOUT")) return "ספק ה-AI לא השלים את הניתוח בזמן. אפשר לנסות שוב.";
+  if (message.includes("AI_RESPONSE_TRUNCATED")) return "תשובת ה-AI נקטעה לפני שהושלמה. נסה לרענן את הניתוח.";
+  if (message.includes("AI_INVALID_JSON_RESPONSE") || message.includes("AI_EMPTY_RESPONSE")) return "ספק ה-AI החזיר תשובה לא שלמה. נסה לרענן את הניתוח.";
+  return message;
+}
 
 function roundMoney(value: number): number {
   return Math.round(value * 100) / 100;
@@ -62,7 +72,7 @@ function netSavings(txs: Transaction[]) {
   );
 }
 
-export function AIAnalysisView({ transactions, periods, bankBalance, preferences }: Props) {
+export function AIAnalysisView({ transactions, periods, preferences }: Props) {
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("month");
   const [periodKey, setPeriodKey] = useState<string | null>(null);
   const [trendCount, setTrendCount] = useState("6");
@@ -153,7 +163,35 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
 
   const expenses = useMemo(() => budgetExpenses(periodTransactions), [periodTransactions]);
   const incomes = useMemo(() => budgetIncome(periodTransactions), [periodTransactions]);
+  const scoreIncomes = useMemo(() => scoreIncomeTransactions(periodTransactions), [periodTransactions]);
   const savingsTotal = useMemo(() => netSavings(periodTransactions), [periodTransactions]);
+  const oneTimeExpenseKeys = useMemo(() => new Set(preferences.oneTimeExpenses), [preferences.oneTimeExpenses]);
+  const forcedFixedExpenseKeys = useMemo(() => new Set(preferences.fixedExpenses), [preferences.fixedExpenses]);
+  const fixedExpenseKeys = useMemo(
+    () => fixedExpenseKeysFor(transactions, periods, oneTimeExpenseKeys, forcedFixedExpenseKeys),
+    [forcedFixedExpenseKeys, oneTimeExpenseKeys, periods, transactions]
+  );
+  const completedIncomeTotals = useMemo(
+    () => periods
+      .filter((period) => period.key !== selectedPeriod?.key)
+      .slice(0, 6)
+      .map((period) => sum(scoreIncomeTransactions(transactions.filter((tx) => {
+        const date = budgetDate(tx);
+        return date >= period.from && date <= period.to;
+      }))))
+      .filter((total) => total > 0),
+    [periods, selectedPeriod?.key, transactions]
+  );
+  const typicalMonthlyIncome = medianAmount(completedIncomeTotals);
+  const trendIncomeBasis = useMemo(
+    () => medianAmount(trendPeriods.map((period) => sum(scoreIncomeTransactions(transactions.filter((tx) => {
+      const date = budgetDate(tx);
+      return date >= period.from && date <= period.to;
+    })))).filter((total) => total > 0)),
+    [transactions, trendPeriods]
+  );
+  const incomeBasisAmount = analysisMode === "month" ? sum(scoreIncomes) : trendIncomeBasis ?? 0;
+  const incomeBasisMethod = analysisMode === "month" ? "actual_salary_period_income" : "median_completed_salary_periods";
   const averageHint = (value: number) =>
     isPartialSinglePeriod
       ? `קצב חודשי משוער ${formatILSWhole(monthlyRate(value, periodDays))} לפי ${periodDays} ימים`
@@ -161,15 +199,35 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
   const analytics = useMemo(() => {
     const categoryTotals = new Map<string, number>();
     const merchantTotals = new Map<string, number>();
+    const fixedCategoryTotals = new Map<string, number>();
+    const fixedMerchantTotals = new Map<string, number>();
+    const oneTimeCategoryTotals = new Map<string, number>();
+    const oneTimeMerchantTotals = new Map<string, number>();
     const savingsCategoryTotals = new Map<string, number>();
     const cardMerchantTotals = new Map<string, number>();
     const cardCategoryTotals = new Map<string, number>();
     const cardGroups = new Map<string, { billingDate: string; cardLast4?: string; cardProvider?: string; total: number; count: number }>();
-    const monthly = new Map<string, { income: number; expense: number; savings: number; leftover: number; transactionCount: number }>();
+    const monthly = new Map<string, {
+      income: number;
+      expense: number;
+      fixedExpense: number;
+      oneTimeExpense: number;
+      savings: number;
+      leftover: number;
+      transactionCount: number;
+    }>();
 
     for (const tx of periodTransactions) {
       const key = budgetDate(tx).slice(0, 7) || "unknown";
-      const row = monthly.get(key) ?? { income: 0, expense: 0, savings: 0, leftover: 0, transactionCount: 0 };
+      const row = monthly.get(key) ?? {
+        income: 0,
+        expense: 0,
+        fixedExpense: 0,
+        oneTimeExpense: 0,
+        savings: 0,
+        leftover: 0,
+        transactionCount: 0,
+      };
       row.transactionCount += 1;
       if (tx.type === "income" && tx.source !== "card" && !NON_FLOW_MAINS.has(tx.categoryMain)) {
         row.income += tx.amount;
@@ -177,6 +235,15 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
         row.expense += tx.amount;
         addToMap(categoryTotals, tx.categoryMain || "OTHER", tx.amount);
         addToMap(merchantTotals, tx.merchant || "OTHER", tx.amount);
+        if (fixedExpenseKeys.has(fixedExpenseKey(tx))) {
+          row.fixedExpense += tx.amount;
+          addToMap(fixedCategoryTotals, tx.categoryMain || "OTHER", tx.amount);
+          addToMap(fixedMerchantTotals, tx.merchant || "OTHER", tx.amount);
+        } else {
+          row.oneTimeExpense += tx.amount;
+          addToMap(oneTimeCategoryTotals, tx.categoryMain || "OTHER", tx.amount);
+          addToMap(oneTimeMerchantTotals, tx.merchant || "OTHER", tx.amount);
+        }
       } else if (isSavings(tx)) {
         const signedSavings = tx.type === "income" ? -tx.amount : tx.amount;
         row.savings += signedSavings;
@@ -203,6 +270,15 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
 
     const incomeTotal = sum(incomes);
     const expenseTotal = sum(expenses);
+    const fixedExpenseTransactions = expenses.filter((tx) => fixedExpenseKeys.has(fixedExpenseKey(tx)));
+    const oneTimeExpenseTransactions = expenses.filter((tx) => !fixedExpenseKeys.has(fixedExpenseKey(tx)));
+    const fixedExpenseTotal = sum(fixedExpenseTransactions);
+    const oneTimeExpenseTotal = sum(oneTimeExpenseTransactions);
+    const actualIncomeReceived = incomeTotal;
+    const monthlyConsumptionExpenses = monthlyRate(expenseTotal, periodDays);
+    const monthlyFixedExpenses = monthlyRate(fixedExpenseTotal, periodDays);
+    const monthlyOneTimeExpenses = monthlyRate(oneTimeExpenseTotal, periodDays);
+    const monthlySavingsAndInvestments = monthlyRate(savingsTotal, periodDays);
     const leftoverTotal = incomeTotal - expenseTotal - savingsTotal;
     const categoryAmountTotal = periodTransactions.reduce(
       (total, tx) => total + (tx.type === "income" ? -tx.amount : tx.amount),
@@ -245,6 +321,46 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
         savingsAndInvestments: roundMoney(savingsTotal),
         leftover: roundMoney(leftoverTotal),
       },
+      expenseComposition: {
+        classification: "same_as_budget_ui_with_user_overrides",
+        totalConsumptionExpenses: roundMoney(expenseTotal),
+        fixed: {
+          total: roundMoney(fixedExpenseTotal),
+          sharePercent: expenseTotal > 0 ? roundMoney((fixedExpenseTotal / expenseTotal) * 100) : 0,
+          transactionCount: fixedExpenseTransactions.length,
+          averagePerPeriod: roundMoney(fixedExpenseTotal / periodCount),
+          monthlyRunRate: roundMoney(monthlyRate(fixedExpenseTotal, periodDays)),
+          topCategories: topRows(fixedCategoryTotals, 10),
+          topMerchants: topRows(fixedMerchantTotals, 12),
+        },
+        oneTime: {
+          total: roundMoney(oneTimeExpenseTotal),
+          sharePercent: expenseTotal > 0 ? roundMoney((oneTimeExpenseTotal / expenseTotal) * 100) : 0,
+          transactionCount: oneTimeExpenseTransactions.length,
+          averagePerPeriod: roundMoney(oneTimeExpenseTotal / periodCount),
+          monthlyRunRate: roundMoney(monthlyRate(oneTimeExpenseTotal, periodDays)),
+          topCategories: topRows(oneTimeCategoryTotals, 10),
+          topMerchants: topRows(oneTimeMerchantTotals, 12),
+        },
+      },
+      affordability: categoryKey || incomeBasisAmount <= 0
+        ? null
+        : {
+            scoreBasis: "monthly_consumption_expenses_vs_monthly_income",
+            incomeBasisMethod,
+            incomeBasisAmount: roundMoney(incomeBasisAmount),
+            actualIncomeReceived: roundMoney(actualIncomeReceived),
+            typicalMonthlyIncome: typicalMonthlyIncome === null ? null : roundMoney(typicalMonthlyIncome),
+            monthlyConsumptionExpenses: roundMoney(monthlyConsumptionExpenses),
+            monthlyFixedExpenses: roundMoney(monthlyFixedExpenses),
+            monthlyOneTimeExpenses: roundMoney(monthlyOneTimeExpenses),
+            monthlySavingsAndInvestments: roundMoney(monthlySavingsAndInvestments),
+            consumptionToIncomePercent: roundMoney((monthlyConsumptionExpenses / incomeBasisAmount) * 100),
+            fixedToIncomePercent: roundMoney((monthlyFixedExpenses / incomeBasisAmount) * 100),
+            oneTimeToIncomePercent: roundMoney((monthlyOneTimeExpenses / incomeBasisAmount) * 100),
+            savingsAndInvestmentsToIncomePercent: roundMoney((monthlySavingsAndInvestments / incomeBasisAmount) * 100),
+            incomeAfterConsumption: roundMoney(incomeBasisAmount - monthlyConsumptionExpenses),
+          },
       averages: {
         income: roundMoney(incomeTotal / periodCount),
         consumptionExpenses: roundMoney(expenseTotal / periodCount),
@@ -293,6 +409,8 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
           month,
           income: roundMoney(row.income),
           consumptionExpenses: roundMoney(row.expense),
+          fixedExpenses: roundMoney(row.fixedExpense),
+          oneTimeExpenses: roundMoney(row.oneTimeExpense),
           savingsAndInvestments: roundMoney(row.savings),
           leftover: roundMoney(row.leftover),
           transactionCount: row.transactionCount,
@@ -301,7 +419,7 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
       topConsumptionMerchants: topRows(merchantTotals, 18),
       savingsAndInvestmentCategories: topRows(savingsCategoryTotals, 8),
     };
-  }, [analysisLabel, analysisMode, categoryKey, debitCutoffs, expenses, incomes, isPartialSinglePeriod, monthEquivalent, periodCount, periodDays, periodTransactions, savingsTotal, selectedCategoryLabel, selectedPeriod, trendFrom, trendTo, userProfile]);
+  }, [analysisLabel, analysisMode, categoryKey, debitCutoffs, expenses, fixedExpenseKeys, incomeBasisAmount, incomeBasisMethod, incomes, isPartialSinglePeriod, monthEquivalent, periodCount, periodDays, periodTransactions, savingsTotal, selectedCategoryLabel, selectedPeriod, trendFrom, trendTo, typicalMonthlyIncome, userProfile]);
 
   const resetAnalysis = () => {
     setResult(null);
@@ -316,10 +434,14 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
       transactions: periodTransactions,
       analytics,
       userProfile,
-      bankBalance,
     }),
-    [analysisLabel, analysisMode, analytics, bankBalance, periodTransactions, userProfile]
+    [analysisLabel, analysisMode, analytics, periodTransactions, userProfile]
   );
+
+  const scoreBasis = !categoryKey && analytics.affordability ? analytics.affordability : null;
+  const incomeHint = analysisMode === "month"
+    ? `התקבל בפועל בתקופה · בסיס הציון: ${formatILSWhole(incomeBasisAmount)}`
+    : `בסיס הציון: חציון תקופות מלאות ${formatILSWhole(incomeBasisAmount)}`;
 
   useEffect(() => {
     if (!analysisLabel) return;
@@ -339,8 +461,7 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message === "AI_API_KEY_REQUIRED" ? "חסר מפתח AI בהגדרות השירותים" : message);
+        setError(aiErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) setCacheLoading(false);
@@ -365,8 +486,7 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
         setCacheInfo({ cached: response.cached, updatedAt: response.updatedAt ?? new Date().toISOString() });
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message === "AI_API_KEY_REQUIRED" ? "חסר מפתח AI בהגדרות השירותים" : message);
+        setError(aiErrorMessage(err));
       })
       .finally(() => setLoading(false));
   };
@@ -470,9 +590,9 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
           <span className="stat-hint">{averageHint(savingsTotal)}</span>
         </div>
         <div className="stat-tile">
-          <span className="stat-label">הכנסות</span>
+          <span className="stat-label">הכנסות בפועל</span>
           <span className="stat-value">{formatILSWhole(sum(incomes))}</span>
-          <span className="stat-hint">{averageHint(sum(incomes))}</span>
+          <span className="stat-hint">{incomeHint}</span>
         </div>
       </div>
 
@@ -500,6 +620,38 @@ export function AIAnalysisView({ transactions, periods, bankBalance, preferences
             )}
             <p>{result.summary}</p>
           </div>
+          {scoreBasis && (
+            <div className="ai-score-basis">
+              <h3>בסיס הציון</h3>
+              <div>
+                <span>{scoreBasis.incomeBasisMethod === "actual_salary_period_income" ? "הכנסה לציון — בפועל בתקופה" : "הכנסה לציון — חציון תקופות"}</span>
+                <strong>{formatILSWhole(scoreBasis.incomeBasisAmount)}</strong>
+              </div>
+              <div>
+                <span>הוצאות צריכה חודשיות</span>
+                <strong>{formatILSWhole(scoreBasis.monthlyConsumptionExpenses)}</strong>
+              </div>
+              <div>
+                <span>מתוכן קבועות</span>
+                <strong>{formatILSWhole(scoreBasis.monthlyFixedExpenses)}</strong>
+              </div>
+              <div>
+                <span>מתוכן חד־פעמיות</span>
+                <strong>{formatILSWhole(scoreBasis.monthlyOneTimeExpenses)}</strong>
+              </div>
+              <div>
+                <span>יחס הוצאות להכנסה</span>
+                <strong>{scoreBasis.consumptionToIncomePercent.toFixed(1)}%</strong>
+              </div>
+              {scoreBasis.typicalMonthlyIncome !== null && scoreBasis.incomeBasisMethod === "actual_salary_period_income" && (
+                <div>
+                  <span>הכנסה טיפוסית — חציון 6 תקופות</span>
+                  <strong>{formatILSWhole(scoreBasis.typicalMonthlyIncome)}</strong>
+                </div>
+              )}
+              <p>חיסכון והשקעות מוצגים בנפרד ואינם מורידים את הציון כהוצאות צריכה. יתרת העו״ש אינה חלק מהציון.</p>
+            </div>
+          )}
           <AIList title="חוזקות" items={result.strengths} />
           <AIList title="סיכונים" items={result.risks} />
           <AIList title="המלצות" items={result.recommendations} />

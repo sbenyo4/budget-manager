@@ -15,5 +15,10 @@
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
-  ]
+  ],
+  "functions": {
+    "api/ai-analysis.ts": {
+      "maxDuration": 60
+    }
+  }
 }

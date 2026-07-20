@@ -59,6 +59,7 @@ const LARGE_TRANSFER_MIN = 1000;
  */
 export function isSavings(tx: Transaction): boolean {
   if (tx.categoryMain === "TRADING" || tx.categoryMain === "ASSETS") return true;
+  if (tx.categoryMain === "DEPOSIT" && tx.amount >= LARGE_TRANSFER_MIN) return true;
   if (tx.categoryMain === "TRANSFER" && tx.amount >= LARGE_TRANSFER_MIN) return true;
   return false;
 }

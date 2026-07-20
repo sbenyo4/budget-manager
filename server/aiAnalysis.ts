@@ -23,7 +23,6 @@ export interface AIAnalysisPayload {
     householdAge: number | null;
     householdSize: number | null;
   };
-  bankBalance: { balance: number; date: string } | null;
 }
 
 export interface AIAnalysisResult {
@@ -32,6 +31,11 @@ export interface AIAnalysisResult {
   strengths: string[];
   risks: string[];
   recommendations: string[];
+}
+
+interface ProviderResponse {
+  text: string;
+  finishReason?: string;
 }
 
 interface CompactTransaction {
@@ -52,6 +56,8 @@ const MODEL_FALLBACKS = {
   anthropic: "claude-haiku-4-5",
   gemini: "gemini-2.0-flash",
 } as const;
+
+const AI_GENERATION_TIMEOUT_MS = 55_000;
 
 const PROVIDER_NAMES = {
   openai: "OpenAI",
@@ -81,6 +87,7 @@ function isCardDebit(tx: CompactTransaction): boolean {
 
 function isSavingsTx(tx: CompactTransaction): boolean {
   if (tx.categoryMain === "TRADING" || tx.categoryMain === "ASSETS") return true;
+  if (tx.categoryMain === "DEPOSIT" && Number(tx.amount ?? 0) >= 1000) return true;
   if (tx.categoryMain === "TRANSFER" && Number(tx.amount ?? 0) >= 1000) return true;
   return false;
 }
@@ -128,7 +135,7 @@ function mergeAttachedTransactions(
   return merged;
 }
 
-function compactPayload(payload: AIAnalysisPayload) {
+export function compactPayload(payload: AIAnalysisPayload) {
   const hasProfileContext = Boolean(payload.userProfile?.householdAge || payload.userProfile?.householdSize);
   const mappedTransactions: CompactTransaction[] = payload.transactions.map((tx) => ({
       date: tx.billingDate ?? tx.date,
@@ -214,7 +221,6 @@ function compactPayload(payload: AIAnalysisPayload) {
     profileGuidance: hasProfileContext
       ? "Use userProfile as context when judging whether spending is reasonable for the household age and householdSize. If householdSize is provided, explicitly adjust the assessment for that number of household members and mention that context in the response. Do not assume marital status, children, medical needs, or lifestyle details that were not provided."
       : undefined,
-    bankBalance: payload.bankBalance,
     analytics: payload.analytics,
     transactionCount: mappedTransactions.length,
     creditCardDetails,
@@ -226,7 +232,7 @@ function compactPayload(payload: AIAnalysisPayload) {
   };
 }
 
-function promptFor(payload: AIAnalysisPayload): string {
+export function promptFor(payload: AIAnalysisPayload): string {
   const profileInstruction = payload.userProfile?.householdAge || payload.userProfile?.householdSize
     ? `\nProfile context: the user's household profile is age=${payload.userProfile.householdAge ?? "not provided"}, householdSize=${payload.userProfile.householdSize ?? "not provided"}. Explicitly take householdSize into account when judging whether grocery, health, household, transport, leisure and recurring spending are reasonable. If householdSize is provided, mention in the summary or one recommendation that the assessment is adjusted for ${payload.userProfile.householdSize} household member(s). Do not invent family composition or needs beyond the supplied age and household size.\n`
     : "";
@@ -238,6 +244,8 @@ function promptFor(payload: AIAnalysisPayload): string {
   "risks": ["..."],
   "recommendations": ["..."]
 }
+
+שמור על תשובה תמציתית: 3–5 פריטים בכל רשימה ועד 600 מילים בסך הכול. ודא שה-JSON נסגר במלואו ותקין לפני סיום התשובה.
 
 הנחיות:
 - התייחס להכנסות, הוצאות, קטגוריות, עסקאות חריגות, תשלומים, אשראי ויתרת בנק אם קיימת.
@@ -258,18 +266,38 @@ function promptFor(payload: AIAnalysisPayload): string {
 - אם analysisMode הוא trend, התמקד במגמות, שינויים בהרגלים ודפוסים חוזרים לאורך התקופה.
 - אם analysisMode הוא month, התמקד בביצועי החודש, חריגות והמלצות לחודש הבא.
 - אם יש מעט נתונים, ציין שהביטחון נמוך.
+- Use a weighted professional judgment for the score, not a rigid arithmetic formula. Keep these relative weights stable: 55% ongoing affordability (monthlyConsumptionExpenses versus incomeBasisAmount and consumptionToIncomePercent), 20% recurring burden (monthlyFixedExpenses and fixedToIncomePercent), 15% savings/investment capacity and financial resilience, and 10% income/spending stability plus data confidence.
+- incomeBasisMethod explains the denominator: actual_salary_period_income is recurring income actually received in the selected salary period; median_completed_salary_periods is the median recurring income across completed salary periods. Never extrapolate income by elapsed days.
+- Score anchors: 90-100 means excellent affordability with a wide recurring surplus and strong resilience; 80-89 means good and sustainable with limited concerns; 70-79 requires at least one material, evidenced weakness; below 70 requires clear affordability stress, such as consumption persistently approaching income, excessive recurring obligations, debt distress, or another severe evidenced risk. Do not give a score below 80 solely because of travel, one-time spending, income timing, a missing salary observation, or data uncertainty.
+- When consumptionToIncomePercent is at or below 40% and fixedToIncomePercent is at or below 35%, treat affordability and recurring burden as strong. Unless the data contains a separate material risk, this profile should normally be assessed in the high-good to excellent range rather than the low 70s.
+- One-time spending and volatility are secondary context. They may moderately affect the stability portion, but must not overpower strong affordability. A missing or abnormally low income period reduces confidence first; it should reduce the score only when the data demonstrates a real recurring income problem rather than a timing/category/data gap.
+- Savings and investments are deliberate allocations, not consumption expenses. Do not lower the score because savingsAndInvestments is high or because incomeAfterConsumption minus savings would be low. A high savings rate is positive or neutral unless the supplied data explicitly shows unaffordable consumption.
+- DEPOSIT, TRADING, ASSETS and qualifying investment transfers are capital allocated to savings/investments. Even an unusually large DEPOSIT must not be described as one-time consumption, overspending, a risk, or a reason to lower the score. Treat a large positive net savingsAndInvestments amount as a financial strength and mention it positively, while scoring affordability only from consumption expenses versus recurring income.
+- Before returning the score, verify that the summary, strengths and risks justify its band. If the score is below 80, name the material financial weakness that warrants it. Data uncertainty alone is not such a weakness; describe it separately as lower confidence.
+- Bank-account balance is not a scoring input. Ignore bankBalance if it appears in a legacy payload, because money may be held in savings or investments outside the checking account. Do not infer financial weakness from a low checking balance.
+- If incomeBasisAmount is unavailable or zero, state that a reliable affordability score cannot be derived; do not substitute actualIncomeReceived, an incidental credit, or bank balance for recurring income.
+- When analytics.expenseComposition exists, explicitly compare totalConsumptionExpenses with fixed and oneTime spending. Use their totals, shares, counts, monthly run rates, categories and merchants in the analysis. Treat this classification as the same classification shown in the budget UI, including the user's manual fixed/one-time overrides. Do not confuse total expenses with either component: fixed.total + oneTime.total must reconcile to totalConsumptionExpenses.
 ${profileInstruction}
 
 נתונים:
 ${JSON.stringify(compactPayload(payload))}`;
 }
 
-function parseResult(text: string): AIAnalysisResult {
+export function parseResult(text: string): AIAnalysisResult {
   const trimmed = text.trim();
+  if (!trimmed) throw new Error("AI_EMPTY_RESPONSE");
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace < 0 || lastBrace < firstBrace) throw new Error("AI_INVALID_JSON_RESPONSE");
   const jsonText = trimmed.startsWith("{")
     ? trimmed
-    : trimmed.slice(trimmed.indexOf("{"), trimmed.lastIndexOf("}") + 1);
-  const parsed = JSON.parse(jsonText) as Partial<AIAnalysisResult>;
+    : trimmed.slice(firstBrace, lastBrace + 1);
+  let parsed: Partial<AIAnalysisResult>;
+  try {
+    parsed = JSON.parse(jsonText) as Partial<AIAnalysisResult>;
+  } catch {
+    throw new Error("AI_INVALID_JSON_RESPONSE");
+  }
   const parsedScore = Number(parsed.score ?? 0);
   return {
     score: Number.isFinite(parsedScore) ? Math.max(0, Math.min(100, parsedScore)) : 0,
@@ -280,7 +308,7 @@ function parseResult(text: string): AIAnalysisResult {
   };
 }
 
-async function callOpenAI(settings: ServiceSettings, prompt: string): Promise<string> {
+async function callOpenAI(settings: ServiceSettings, prompt: string): Promise<ProviderResponse> {
   const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -293,13 +321,16 @@ async function callOpenAI(settings: ServiceSettings, prompt: string): Promise<st
       response_format: { type: "json_object" },
       messages: [{ role: "user", content: prompt }],
     }),
-  });
+  }, AI_GENERATION_TIMEOUT_MS);
   if (!res.ok) throw new Error(await aiProviderErrorMessage("openai", res));
-  const body = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  return body.choices?.[0]?.message?.content ?? "";
+  const body = (await res.json()) as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }> };
+  return {
+    text: body.choices?.[0]?.message?.content ?? "",
+    finishReason: body.choices?.[0]?.finish_reason,
+  };
 }
 
-async function callAnthropic(settings: ServiceSettings, prompt: string): Promise<string> {
+async function callAnthropic(settings: ServiceSettings, prompt: string): Promise<ProviderResponse> {
   const model =
     settings.aiModel && !settings.aiModel.startsWith("claude-3-")
       ? settings.aiModel
@@ -314,21 +345,24 @@ async function callAnthropic(settings: ServiceSettings, prompt: string): Promise
       },
       body: JSON.stringify({
         model: selectedModel,
-        max_tokens: 1200,
+        max_tokens: 2400,
         temperature: 0.2,
         messages: [{ role: "user", content: prompt }],
       }),
-    });
+    }, AI_GENERATION_TIMEOUT_MS);
   let res = await request(model);
   if (res.status === 404 && model !== MODEL_FALLBACKS.anthropic) {
     res = await request(MODEL_FALLBACKS.anthropic);
   }
   if (!res.ok) throw new Error(await aiProviderErrorMessage("anthropic", res));
-  const body = (await res.json()) as { content?: Array<{ type?: string; text?: string }> };
-  return body.content?.find((part) => part.type === "text")?.text ?? "";
+  const body = (await res.json()) as { content?: Array<{ type?: string; text?: string }>; stop_reason?: string };
+  return {
+    text: body.content?.find((part) => part.type === "text")?.text ?? "",
+    finishReason: body.stop_reason,
+  };
 }
 
-async function callGemini(settings: ServiceSettings, prompt: string): Promise<string> {
+async function callGemini(settings: ServiceSettings, prompt: string): Promise<ProviderResponse> {
   const model = (settings.aiModel || MODEL_FALLBACKS.gemini).replace(/^models\//, "");
   const res = await fetchWithTimeout(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(settings.aiApiKey)}`,
@@ -339,11 +373,15 @@ async function callGemini(settings: ServiceSettings, prompt: string): Promise<st
         generationConfig: { temperature: 0.2, responseMimeType: "application/json" },
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       }),
-    }
+    },
+    AI_GENERATION_TIMEOUT_MS
   );
   if (!res.ok) throw new Error(await aiProviderErrorMessage("gemini", res));
-  const body = (await res.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-  return body.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
+  const body = (await res.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }> };
+  return {
+    text: body.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "",
+    finishReason: body.candidates?.[0]?.finishReason,
+  };
 }
 
 async function aiProviderErrorMessage(provider: keyof typeof PROVIDER_NAMES, res: Response): Promise<string> {
@@ -382,11 +420,40 @@ async function aiProviderErrorMessage(provider: keyof typeof PROVIDER_NAMES, res
 export async function analyzeBudget(settings: ServiceSettings, payload: AIAnalysisPayload): Promise<AIAnalysisResult> {
   if (!settings.aiApiKey) throw new Error("AI_API_KEY_REQUIRED");
   const prompt = promptFor(payload);
-  const text =
-    settings.aiProvider === "anthropic"
-      ? await callAnthropic(settings, prompt)
-      : settings.aiProvider === "gemini"
-        ? await callGemini(settings, prompt)
-        : await callOpenAI(settings, prompt);
-  return parseResult(text);
+  const startedAt = Date.now();
+  const metadata = {
+    provider: settings.aiProvider,
+    model: settings.aiModel || MODEL_FALLBACKS[settings.aiProvider],
+    analysisMode: payload.analysisMode ?? "month",
+    transactionCount: payload.transactions.length,
+    promptBytes: Buffer.byteLength(prompt, "utf8"),
+  };
+  console.info("[ai-analysis] upstream request started", metadata);
+  try {
+    const response =
+      settings.aiProvider === "anthropic"
+        ? await callAnthropic(settings, prompt)
+        : settings.aiProvider === "gemini"
+          ? await callGemini(settings, prompt)
+          : await callOpenAI(settings, prompt);
+    const finishReason = response.finishReason?.toLowerCase() ?? "";
+    if (finishReason === "max_tokens" || finishReason === "length" || finishReason === "max_tokens_reached") {
+      throw new Error("AI_RESPONSE_TRUNCATED");
+    }
+    const result = parseResult(response.text);
+    console.info("[ai-analysis] upstream request completed", {
+      ...metadata,
+      durationMs: Date.now() - startedAt,
+      responseChars: response.text.length,
+      finishReason: response.finishReason ?? "unknown",
+    });
+    return result;
+  } catch (error) {
+    console.error("[ai-analysis] upstream request failed", {
+      ...metadata,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 }

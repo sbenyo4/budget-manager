@@ -705,7 +705,6 @@ function BudgetApp() {
         <AIAnalysisView
           transactions={displayTransactions}
           periods={periods}
-          bankBalance={bankBalance}
           preferences={preferences}
         />
       )}

@@ -2,8 +2,8 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
-import { budgetDate, cardDebitCutoffs, isCardDebit, isCardTransactionCharged, isConsumption } from "../logic/flows";
-import { isRepeatedExpenseGroup } from "../logic/expenseRecurrence";
+import { cardDebitCutoffs, isCardDebit, isCardTransactionCharged, isConsumption } from "../logic/flows";
+import { fixedExpenseKey, fixedExpenseKeysFor } from "../logic/expenseScope";
 import type { BudgetPreferences } from "../api/preferences";
 import { displaySubLabel, mainColor } from "../logic/categoryNames";
 import {
@@ -84,54 +84,10 @@ interface AmountDistributionBin {
   count: number;
 }
 
-function fixedExpenseKey(tx: Transaction): string {
-  return `${tx.categoryMain}::${merchantKey(tx)}`;
-}
-
 function expenseScopeLabel(expenseScope: ExpenseScope): string {
   if (expenseScope === "fixed") return "קבועות בלבד";
   if (expenseScope === "variable") return "חד פעמיות / לא קבועות";
   return "כל ההוצאות";
-}
-
-function periodKeyFor(date: string, periods: Period[]): string | null {
-  return periods.find((p) => date >= p.from && date <= p.to)?.key ?? null;
-}
-
-function isRepeatExpenseGroup(group: { count: number; periodKeys: Set<string> }): boolean {
-  return isRepeatedExpenseGroup(group.count, group.periodKeys.size);
-}
-
-function fixedExpenseKeysFor(
-  transactions: Transaction[],
-  periods: Period[],
-  oneTimeKeys: Set<string>,
-  forcedFixedKeys: Set<string>
-): Set<string> {
-  const groups = new Map<string, { tx: Transaction; count: number; periodKeys: Set<string>; recurring: boolean }>();
-
-  for (const tx of transactions) {
-    if (tx.type === "income" || !isConsumption(tx)) continue;
-    const key = fixedExpenseKey(tx);
-    const periodKey = periodKeyFor(budgetDate(tx), periods);
-    const group = groups.get(key) ?? { tx, count: 0, periodKeys: new Set<string>(), recurring: false };
-    group.count += 1;
-    group.recurring = group.recurring || Boolean(tx.recurring);
-    if (periodKey) group.periodKeys.add(periodKey);
-    groups.set(key, group);
-  }
-
-  const fixedKeys = new Set<string>();
-  for (const [key, group] of groups) {
-    const detailKey = overrideKey(group.tx.categoryMain, merchantKey(group.tx));
-    if (forcedFixedKeys.has(detailKey)) {
-      fixedKeys.add(key);
-      continue;
-    }
-    if (oneTimeKeys.has(detailKey)) continue;
-    if (group.recurring || isRepeatExpenseGroup(group)) fixedKeys.add(key);
-  }
-  return fixedKeys;
 }
 
 function isInExpenseScope(tx: Transaction, expenseScope: ExpenseScope, fixedExpenseKeys: Set<string>): boolean {

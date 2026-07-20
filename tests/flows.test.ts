@@ -53,6 +53,18 @@ test("large outgoing transfers retain the existing savings classification", () =
   assert.equal(isConsumption(transfer), false);
 });
 
+test("large investment deposits are savings and never consumption", () => {
+  const deposit = tx({
+    amount: 1_300_000,
+    categoryMain: "DEPOSIT",
+    categorySub: "CHQ_INCOME",
+    merchant: "שיק",
+  });
+
+  assert.equal(isSavings(deposit), true);
+  assert.equal(isConsumption(deposit), false);
+});
+
 test("card transactions use their billing date as the shared budget date", () => {
   assert.equal(
     budgetDate(tx({ source: "card", date: "2026-06-28", billingDate: "2026-07-10" })),

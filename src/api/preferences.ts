@@ -188,7 +188,6 @@ export function analyzeBudgetWithAI(payload: {
     householdAge: number | null;
     householdSize: number | null;
   };
-  bankBalance: { balance: number; date: string } | null;
   forceRefresh?: boolean;
   cacheOnly?: boolean;
 }): Promise<AIAnalysisResponse> {

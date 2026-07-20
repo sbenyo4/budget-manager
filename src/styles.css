@@ -2749,6 +2749,39 @@ h1 {
   color: var(--text-secondary);
 }
 
+.ai-score-basis {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--gridline);
+  border-radius: 10px;
+  background: var(--surface-1);
+}
+
+.ai-score-basis h3,
+.ai-score-basis p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.ai-score-basis > div {
+  display: grid;
+  gap: 4px;
+}
+
+.ai-score-basis span,
+.ai-score-basis p {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.ai-score-basis strong {
+  color: var(--text-primary);
+  font-size: 1.05rem;
+}
+
 .ai-list {
   grid-column: 1 / -1;
   border-top: 1px solid var(--gridline);
@@ -2766,6 +2799,9 @@ h1 {
 }
 
 @media (max-width: 720px) {
+  .ai-score-basis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .app {
     padding: 20px 14px 48px;
   }

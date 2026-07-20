@@ -26,7 +26,7 @@ import { isValidAIAnalysisPayload } from "./server/aiPayload";
  */
 
 const TOKEN_URL = "https://api.open-finance.ai/oauth/token";
-const AI_ANALYSIS_CACHE_VERSION = "ai-analysis-cache-v2";
+const AI_ANALYSIS_CACHE_VERSION = "ai-analysis-cache-v7";
 const PREFS_DEFAULT = {
   sectionOverrides: {},
   installmentOverrides: {},
