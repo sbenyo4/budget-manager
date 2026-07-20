@@ -40,3 +40,16 @@ test("preference PATCH normalization never clears fields that were not sent or w
   assert.equal("householdBirthDate" in patch, false);
   assert.equal("householdSize" in patch, false);
 });
+
+test("installment overrides retain only bounded integer installment counts", () => {
+  const normalized = normalizePreferences({
+    installmentOverrides: {
+      "card:real-transaction": 4,
+      "card:fractional": 3.5,
+      "card:too-small": 1,
+      "card:too-large": 121,
+    },
+  });
+
+  assert.deepEqual(normalized.installmentOverrides, { "card:real-transaction": 4 });
+});

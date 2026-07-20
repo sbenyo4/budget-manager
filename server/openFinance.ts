@@ -21,7 +21,7 @@ interface RawAccount {
   balances?: RawBalance[];
 }
 
-interface RawTransaction {
+export interface RawTransaction {
   id?: string;
   accountNumber?: string;
   providerId?: string;
@@ -34,6 +34,7 @@ interface RawTransaction {
   merchantName?: string;
   category?: { main?: string; sub?: string };
   status?: string;
+  details?: string;
   installments?: { number?: number; total?: number };
   isCreditCardInstallment?: boolean;
 }
@@ -53,6 +54,7 @@ interface NormalizedTransaction {
   installment?: {
     number?: number;
     total?: number;
+    monthlyAmountPending?: boolean;
   };
   type: "income" | "expense";
   categoryMain: string;
@@ -218,7 +220,11 @@ function cardLast4(raw: RawTransaction, source: "bank" | "card"): string | undef
 }
 
 function isCardInstallment(raw: RawTransaction): boolean {
-  return Boolean(raw.isCreditCardInstallment || raw.installments);
+  return Boolean(raw.isCreditCardInstallment || raw.installments || raw.details?.trim() === "תשלומים");
+}
+
+function isMonthlyInstallmentAmountPending(raw: RawTransaction): boolean {
+  return raw.details?.trim() === "תשלומים" && !raw.installments?.total;
 }
 
 function dedupeTransactions(transactions: NormalizedTransaction[]): PublicTransaction[] {
@@ -235,7 +241,11 @@ function dedupeTransactions(transactions: NormalizedTransaction[]): PublicTransa
   return unique;
 }
 
-function normalize(raw: RawTransaction, index: number, source: "bank" | "card"): NormalizedTransaction {
+export function normalizeOpenFinanceTransaction(
+  raw: RawTransaction,
+  index: number,
+  source: "bank" | "card"
+): NormalizedTransaction {
   const rawDate =
     source === "card"
       ? raw.date?.transactionDate ?? raw.date?.bookingDate ?? raw.date?.valueDate ?? ""
@@ -245,8 +255,13 @@ function normalize(raw: RawTransaction, index: number, source: "bank" | "card"):
   const amount = rawAmount(raw);
   const originalAmount = rawOriginalAmount(raw);
   const last4 = cardLast4(raw, source);
+  const monthlyAmountPending = isMonthlyInstallmentAmountPending(raw);
   const installment = isCardInstallment(raw)
-    ? { number: raw.installments?.number, total: raw.installments?.total }
+    ? {
+        ...(raw.installments?.number !== undefined ? { number: raw.installments.number } : {}),
+        ...(raw.installments?.total !== undefined ? { total: raw.installments.total } : {}),
+        ...(monthlyAmountPending ? { monthlyAmountPending: true } : {}),
+      }
     : undefined;
 
   return {
@@ -260,7 +275,7 @@ function normalize(raw: RawTransaction, index: number, source: "bank" | "card"):
     merchant: raw.merchantName || raw.description?.description || "לא ידוע",
     amount: Math.abs(amount),
     ...(raw.status ? { status: raw.status.toUpperCase() } : {}),
-    ...(originalAmount !== undefined && Math.abs(originalAmount) !== Math.abs(amount)
+    ...(originalAmount !== undefined && (Math.abs(originalAmount) !== Math.abs(amount) || monthlyAmountPending)
       ? { originalAmount: Math.abs(originalAmount) }
       : {}),
     ...(installment ? { installment } : {}),
@@ -401,8 +416,8 @@ export async function getTransactions(settings: ServiceSettings, from: string, t
     fetchTransactions(settings, from, to, "CARD"),
   ]);
   const normalized = attachCardDebitDetails([
-    ...bank.map((raw, i) => normalize(raw, i, "bank")),
-    ...card.map((raw, i) => normalize(raw, i, "card")),
+    ...bank.map((raw, i) => normalizeOpenFinanceTransaction(raw, i, "bank")),
+    ...card.map((raw, i) => normalizeOpenFinanceTransaction(raw, i, "card")),
   ]).filter((tx) => tx.date && tx.date >= from && tx.date <= to && tx.amount > 0);
   return dedupeTransactions(normalized);
 }

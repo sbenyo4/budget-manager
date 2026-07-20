@@ -9,6 +9,7 @@ export interface AuthUser {
 
 export interface BudgetPreferences {
   sectionOverrides: Record<string, string>;
+  installmentOverrides: Record<string, number>;
   oneTimeExpenses: string[];
   fixedExpenses: string[];
   highAmountThreshold: number;
@@ -31,6 +32,7 @@ export interface ServiceSettings {
 
 export const emptyPreferences: BudgetPreferences = {
   sectionOverrides: {},
+  installmentOverrides: {},
   oneTimeExpenses: [],
   fixedExpenses: [],
   highAmountThreshold: 5000,
@@ -61,6 +63,10 @@ function normalizeClientPreferences(value: Partial<BudgetPreferences>): BudgetPr
       value.sectionOverrides && typeof value.sectionOverrides === "object" && !Array.isArray(value.sectionOverrides)
         ? value.sectionOverrides
         : emptyPreferences.sectionOverrides,
+    installmentOverrides:
+      value.installmentOverrides && typeof value.installmentOverrides === "object" && !Array.isArray(value.installmentOverrides)
+        ? value.installmentOverrides
+        : emptyPreferences.installmentOverrides,
     oneTimeExpenses: Array.isArray(value.oneTimeExpenses) ? value.oneTimeExpenses : emptyPreferences.oneTimeExpenses,
     fixedExpenses: Array.isArray(value.fixedExpenses) ? value.fixedExpenses : emptyPreferences.fixedExpenses,
     autoLogoutMinutes:

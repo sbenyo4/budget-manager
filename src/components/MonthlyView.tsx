@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
@@ -352,11 +352,71 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && Boolean(target.closest("button, select, input, textarea, a, [role='button']"));
 }
 
-function installmentText(tx: Transaction): string | null {
+function validInstallmentTotal(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 2 && value <= 120;
+}
+
+function installmentMonthlyAmount(tx: Transaction, manualTotal?: number): number | null {
+  if (!tx.installment?.monthlyAmountPending || !validInstallmentTotal(manualTotal)) return null;
+  return (tx.originalAmount ?? tx.amount) / manualTotal;
+}
+
+function installmentText(tx: Transaction, manualTotal?: number): string | null {
+  if (tx.installment?.monthlyAmountPending) {
+    const monthlyAmount = installmentMonthlyAmount(tx, manualTotal);
+    if (monthlyAmount !== null) {
+      return `${manualTotal} תשלומים · חודשי ${formatILS(monthlyAmount)} · מקור: ${formatILS(tx.originalAmount ?? tx.amount)}`;
+    }
+    return "עסקת תשלומים · החיוב החודשי טרם דווח";
+  }
   if (!tx.installment?.total || tx.installment.total <= 1) return null;
   const number = tx.installment.number ? `${tx.installment.number}/` : "";
   const original = tx.originalAmount ? ` · מקור: ${formatILS(tx.originalAmount)}` : "";
   return `תשלום ${number}${tx.installment.total}${original}`;
+}
+
+function hasPendingMonthlyInstallmentAmount(tx: Transaction, manualTotal?: number): boolean {
+  return tx.installment?.monthlyAmountPending === true && !validInstallmentTotal(manualTotal);
+}
+
+function InstallmentOverrideControl({
+  value,
+  onSave,
+}: {
+  value?: number;
+  onSave: (value: number | null) => void;
+}) {
+  const [draft, setDraft] = useState(value ? String(value) : "");
+  useEffect(() => setDraft(value ? String(value) : ""), [value]);
+  const parsed = Number(draft);
+  const canSave = validInstallmentTotal(parsed) && parsed !== value;
+
+  return (
+    <form
+      className="installment-override-control"
+      onClick={(event) => event.stopPropagation()}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (validInstallmentTotal(parsed)) onSave(parsed);
+      }}
+    >
+      <label>
+        מספר תשלומים
+        <input
+          type="number"
+          min="2"
+          max="120"
+          step="1"
+          inputMode="numeric"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          aria-label="מספר תשלומים לעסקה"
+        />
+      </label>
+      <button type="submit" disabled={!canSave}>שמור</button>
+      {value && <button type="button" onClick={() => onSave(null)}>נקה</button>}
+    </form>
+  );
 }
 
 function cardDigitsText(tx: Transaction): string | null {
@@ -454,6 +514,7 @@ export function MonthlyView({
   const [expenseScope, setExpenseScope] = useState<ExpenseScope>("all");
   const [categoryViewMode, setCategoryViewMode] = useState<CategoryViewMode>("transactions");
   const sectionOverrides = preferences.sectionOverrides;
+  const installmentOverrides = preferences.installmentOverrides;
   const oneTimeExpenses = useMemo(() => new Set(preferences.oneTimeExpenses), [preferences.oneTimeExpenses]);
   const fixedExpenses = useMemo(() => new Set(preferences.fixedExpenses), [preferences.fixedExpenses]);
   const highAmountThreshold = preferences.highAmountThreshold;
@@ -540,9 +601,19 @@ export function MonthlyView({
 
   // Upcoming bill: card activity not yet debited
   const pendingCard = useMemo(() => filteredCardTxs.filter(isPending), [filteredCardTxs, isPending]);
+  const pendingInstallmentDetails = useMemo(
+    () => pendingCard.filter((tx) => hasPendingMonthlyInstallmentAmount(tx, installmentOverrides[tx.id])),
+    [installmentOverrides, pendingCard]
+  );
   const pendingTotal = useMemo(
-    () => sum(pendingCard.filter((t) => t.type !== "income")) - sum(pendingCard.filter((t) => t.type === "income")),
-    [pendingCard]
+    () => {
+      return pendingCard.reduce((total, tx) => {
+        if (hasPendingMonthlyInstallmentAmount(tx, installmentOverrides[tx.id])) return total;
+        const amount = installmentMonthlyAmount(tx, installmentOverrides[tx.id]) ?? tx.amount;
+        return total + (tx.type === "income" ? -amount : amount);
+      }, 0);
+    },
+    [installmentOverrides, pendingCard]
   );
   const inferredPendingBillingDates = useMemo(() => inferredBillingDates(pendingCard), [pendingCard]);
   const pendingGroups = useMemo(() => {
@@ -552,6 +623,7 @@ export function MonthlyView({
       total: number;
       transactions: Transaction[];
       inferredCount: number;
+      pendingInstallmentCount: number;
     }>();
     for (const tx of pendingCard) {
       const inferredBillingDate = inferredPendingBillingDates.get(tx.id);
@@ -563,8 +635,15 @@ export function MonthlyView({
         total: 0,
         transactions: [],
         inferredCount: 0,
+        pendingInstallmentCount: 0,
       };
-      group.total += tx.type === "income" ? -tx.amount : tx.amount;
+      const manualInstallmentAmount = installmentMonthlyAmount(tx, installmentOverrides[tx.id]);
+      if (hasPendingMonthlyInstallmentAmount(tx, installmentOverrides[tx.id])) {
+        group.pendingInstallmentCount += 1;
+      } else {
+        const amount = manualInstallmentAmount ?? tx.amount;
+        group.total += tx.type === "income" ? -amount : amount;
+      }
       group.transactions.push(tx);
       if (inferredBillingDate) group.inferredCount += 1;
       groups.set(key, group);
@@ -572,20 +651,48 @@ export function MonthlyView({
     return [...groups.values()]
       .map((group) => ({ ...group, transactions: [...group.transactions].sort((a, b) => b.date.localeCompare(a.date)) }))
       .sort((a, b) => (a.billingDate ?? "9999-99-99").localeCompare(b.billingDate ?? "9999-99-99"));
-  }, [inferredPendingBillingDates, pendingCard]);
+  }, [inferredPendingBillingDates, installmentOverrides, pendingCard]);
   const pendingBillingSummaries = useMemo(() => {
-    const summaries = new Map<string, { billingDate?: string; total: number; count: number }>();
+    const summaries = new Map<string, { billingDate?: string; total: number; count: number; pendingInstallmentCount: number }>();
     for (const group of pendingGroups) {
       const key = group.billingDate ?? "next";
-      const summary = summaries.get(key) ?? { billingDate: group.billingDate, total: 0, count: 0 };
+      const summary = summaries.get(key) ?? {
+        billingDate: group.billingDate,
+        total: 0,
+        count: 0,
+        pendingInstallmentCount: 0,
+      };
       summary.total += group.total;
       summary.count += group.transactions.length;
+      summary.pendingInstallmentCount += group.pendingInstallmentCount;
       summaries.set(key, summary);
     }
     return [...summaries.values()].sort((a, b) => (a.billingDate ?? "9999-99-99").localeCompare(b.billingDate ?? "9999-99-99"));
   }, [pendingGroups]);
-  const nextPendingCharge = pendingBillingSummaries[0];
-  const selectedPendingChargeTotal = nextPendingCharge?.total ?? 0;
+  const currentMonthKey = todayIso().slice(0, 7);
+  const selectedPendingMonth = useMemo(() => {
+    const dated = pendingBillingSummaries.filter((summary) => summary.billingDate);
+    const currentMonth = dated.filter((summary) => summary.billingDate?.slice(0, 7) === currentMonthKey);
+    const selectedMonthKey = currentMonth.length > 0
+      ? currentMonthKey
+      : dated.find((summary) => (summary.billingDate?.slice(0, 7) ?? "") > currentMonthKey)?.billingDate?.slice(0, 7);
+    const selected = selectedMonthKey
+      ? dated.filter((summary) => summary.billingDate?.slice(0, 7) === selectedMonthKey)
+      : pendingBillingSummaries.filter((summary) => !summary.billingDate);
+    return {
+      monthKey: selectedMonthKey,
+      billingDates: selected.flatMap((summary) => summary.billingDate ? [summary.billingDate] : []),
+      total: selected.reduce((total, summary) => total + summary.total, 0),
+      count: selected.reduce((count, summary) => count + summary.count, 0),
+      pendingInstallmentCount: selected.reduce(
+        (count, summary) => count + summary.pendingInstallmentCount,
+        0
+      ),
+    };
+  }, [currentMonthKey, pendingBillingSummaries]);
+  const selectedPendingChargeTotal = selectedPendingMonth.total;
+  const pendingTotalDiffersFromSelected = Math.abs(pendingTotal - selectedPendingChargeTotal) >= 0.005;
+  const selectedPendingMonthIsCurrent = selectedPendingMonth.monthKey === currentMonthKey;
 
   // Category breakdown: replace the aggregate card debits with the card's
   // own transactions (incl. pending ones — they're real consumption)
@@ -815,6 +922,13 @@ export function MonthlyView({
     });
   }, [oneTimeExpenses, onPreferencesChange, preferences]);
 
+  const setInstallmentOverride = useCallback((tx: Transaction, total: number | null) => {
+    const next = { ...installmentOverrides };
+    if (total === null) delete next[tx.id];
+    else next[tx.id] = total;
+    onPreferencesChange({ ...preferences, installmentOverrides: next });
+  }, [installmentOverrides, onPreferencesChange, preferences]);
+
   if (!period) {
     return <p className="loading">אין נתונים להצגה.</p>;
   }
@@ -967,20 +1081,27 @@ export function MonthlyView({
           onClick={() => setPendingDetailsOpen((open) => !open)}
           aria-expanded={pendingDetailsOpen}
         >
-          <span className="stat-label">חיוב לחודש הנבחר ⏳</span>
+          <span className="stat-label">
+            {selectedPendingMonthIsCurrent ? "חיובים עתידיים החודש ⏳" : "חיובים עתידיים בחודש הבא ⏳"}
+          </span>
           <span className="stat-value">{formatILSWhole(selectedPendingChargeTotal)}</span>
           <span className="stat-hint">
             {pendingCard.length === 0
               ? "אין עסקאות"
-              : nextPendingCharge?.billingDate
-                ? `ירד ב-${formatShortDate(nextPendingCharge.billingDate)}`
+              : selectedPendingMonth.billingDates.length > 0
+                ? `ירד ב-${selectedPendingMonth.billingDates.map(formatShortDate).join(", ")}`
                 : "בחיוב הבא"}
           </span>
-          {pendingCard.length > 0 && (
+          {pendingCard.length > 0 && pendingTotalDiffersFromSelected && (
             <span className="stat-hint pending-next-charge">
               <span>
-                סה"כ שטרם חויב: {formatILS(pendingTotal)} · {pendingCard.length} עסקאות
+                סה"כ כל החיובים העתידיים: {formatILS(pendingTotal)} · {pendingCard.length} עסקאות
               </span>
+            </span>
+          )}
+          {pendingInstallmentDetails.length > 0 && (
+            <span className="stat-hint">
+              {pendingInstallmentDetails.length} עסקאות תשלומים ממתינות לפירוט חודשי
             </span>
           )}
           <span className="stat-action-icon" aria-hidden>{pendingDetailsOpen ? "▴" : "▾"}</span>
@@ -991,7 +1112,11 @@ export function MonthlyView({
         <section className="pending-card-detail" aria-label="פירוט אשראי שטרם חויב">
           <div className="pending-card-detail-header">
             <h3>פירוט אשראי שטרם חויב</h3>
-            <span>{pendingCard.length > 0 ? `${pendingCard.length} עסקאות · ${formatILS(pendingTotal)}` : "אין עסקאות להצגה"}</span>
+            <span>
+              {pendingCard.length > 0
+                ? `${pendingCard.length} עסקאות · חיובים ידועים ${formatILS(pendingTotal)}${pendingInstallmentDetails.length > 0 ? ` · ${pendingInstallmentDetails.length} ממתינות לפירוט תשלומים` : ""}`
+                : "אין עסקאות להצגה"}
+            </span>
           </div>
           {pendingGroups.length > 0 ? (
             <div className="pending-card-groups">
@@ -1005,24 +1130,41 @@ export function MonthlyView({
                         <span className="sub-label"> · כולל {group.inferredCount} {group.inferredCount === 1 ? "שיוך משוער" : "שיוכים משוערים"}</span>
                       )}
                     </span>
-                    <strong>{formatILS(group.total)}</strong>
+                    <strong>
+                      {formatILS(group.total)}
+                      {group.pendingInstallmentCount > 0 && (
+                        <span className="sub-label"> + {group.pendingInstallmentCount} עסקאות תשלומים ללא סכום חודשי</span>
+                      )}
+                    </strong>
                   </div>
                   <ul className="pending-card-list">
                     {group.transactions.map((tx) => {
                       const categoryMain = effectiveCategoryMain(tx);
-                      const installment = installmentText(tx);
+                      const manualInstallmentTotal = installmentOverrides[tx.id];
+                      const manualInstallmentAmount = installmentMonthlyAmount(tx, manualInstallmentTotal);
+                      const installment = installmentText(tx, manualInstallmentTotal);
                       return (
                         <li key={tx.id} className="pending-card-item">
                           <span className="pending-card-date">{formatShortDate(tx.date)}</span>
                           <span className="pending-card-merchant">
                             {tx.merchant}
                             {installment && <span className="sub-label"> · {installment}</span>}
+                            {tx.installment?.monthlyAmountPending && (
+                              <InstallmentOverrideControl
+                                value={manualInstallmentTotal}
+                                onSave={(total) => setInstallmentOverride(tx, total)}
+                              />
+                            )}
                           </span>
                           <span className="pending-card-category">
                             <span className="swatch" style={{ background: mainColor(categoryMain) }} aria-hidden />
                             {categoryLabel(categoryMain)}
                           </span>
-                          <strong className="pending-card-amount">{tx.type === "income" ? "+" : "−"}{formatILS(tx.amount)}</strong>
+                          <strong className="pending-card-amount">
+                            {hasPendingMonthlyInstallmentAmount(tx, manualInstallmentTotal)
+                              ? `סה״כ עסקה ${formatILS(tx.originalAmount ?? tx.amount)}`
+                              : `${tx.type === "income" ? "+" : "−"}${formatILS(manualInstallmentAmount ?? tx.amount)}`}
+                          </strong>
                         </li>
                       );
                     })}
@@ -1135,7 +1277,9 @@ export function MonthlyView({
                       <span className="category-group-transaction-date">{formatShortDate(tx.date)}</span>
                       <span className="category-group-transaction-merchant">
                         {highlightSearchText(tx.merchant, visibleSearchQuery)}
-                        {installmentText(tx) && <span className="sub-label"> · {installmentText(tx)}</span>}
+                        {installmentText(tx, installmentOverrides[tx.id]) && (
+                          <span className="sub-label"> · {installmentText(tx, installmentOverrides[tx.id])}</span>
+                        )}
                       </span>
                       <span className="category-group-transaction-source">
                         {tx.source === "card" ? (tx.cardLast4 ? `כרטיס ${tx.cardLast4}` : "אשראי") : "בנק"}
@@ -1266,7 +1410,9 @@ export function MonthlyView({
                     <span className="merchant-text">{highlightSearchText(displayTx.merchant, visibleSearchQuery)}
                     {singleDebitDetail && <span className="sub-label"> · עסקת אשראי יחידה</span>}
                     {canExpandDebit && <span className="sub-label"> · {debitDetails.length} עסקאות בכרטיס</span>}
-                    {installmentText(displayTx) && <span className="sub-label"> · {installmentText(displayTx)}</span>}
+                    {installmentText(displayTx, installmentOverrides[displayTx.id]) && (
+                      <span className="sub-label"> · {installmentText(displayTx, installmentOverrides[displayTx.id])}</span>
+                    )}
                     {displayTx.recurring && <span className="recurring-tag"> · מנוי / קבוע</span>}
                     {isCardDebit(tx) && allDebitDetails.length === 0 && isReportedPending && (
                       <span className="sub-label"> · החיוב דווח בסטטוס זמני והפירוט עשוי להתעדכן</span>
@@ -1353,7 +1499,7 @@ export function MonthlyView({
                     <td colSpan={5}>
                       <ul className="debit-detail-list" aria-label="פירוט עסקאות חיוב אשראי">
                         {debitDetails.map((detail) => {
-                          const detailInstallment = installmentText(detail);
+                          const detailInstallment = installmentText(detail, installmentOverrides[detail.id]);
                           const detailDate = new Date(`${detail.date}T00:00:00`).toLocaleDateString("he-IL", {
                             day: "numeric",
                             month: "numeric",

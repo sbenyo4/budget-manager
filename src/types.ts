@@ -21,6 +21,8 @@ export interface Transaction {
   installment?: {
     number?: number;
     total?: number;
+    /** The provider identified an installment purchase but has not supplied the monthly charge yet. */
+    monthlyAmountPending?: boolean;
   };
   /** Card transactions represented by an aggregate bank credit-card debit. */
   detailTransactions?: Transaction[];

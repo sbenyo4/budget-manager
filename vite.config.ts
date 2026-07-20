@@ -29,6 +29,7 @@ const TOKEN_URL = "https://api.open-finance.ai/oauth/token";
 const AI_ANALYSIS_CACHE_VERSION = "ai-analysis-cache-v2";
 const PREFS_DEFAULT = {
   sectionOverrides: {},
+  installmentOverrides: {},
   oneTimeExpenses: [],
   fixedExpenses: [],
   highAmountThreshold: 5000,
@@ -88,6 +89,7 @@ interface RawTransaction {
   merchantName?: string;
   category?: { main?: string; sub?: string };
   status?: string;
+  details?: string;
   installments?: { number?: number; total?: number };
   isCreditCardInstallment?: boolean;
 }
@@ -782,7 +784,11 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
   }
 
   function isCardInstallment(raw: RawTransaction): boolean {
-    return Boolean(raw.isCreditCardInstallment || raw.installments);
+    return Boolean(raw.isCreditCardInstallment || raw.installments || raw.details?.trim() === "תשלומים");
+  }
+
+  function isMonthlyInstallmentAmountPending(raw: RawTransaction): boolean {
+    return raw.details?.trim() === "תשלומים" && !raw.installments?.total;
   }
 
   function normalizeDate(value: string): string {
@@ -850,8 +856,13 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     const amount = rawAmount(raw);
     const originalAmount = rawOriginalAmount(raw);
     const last4 = cardLast4(raw, source);
+    const monthlyAmountPending = isMonthlyInstallmentAmountPending(raw);
     const installment = isCardInstallment(raw)
-      ? { number: raw.installments?.number, total: raw.installments?.total }
+      ? {
+          ...(raw.installments?.number !== undefined ? { number: raw.installments.number } : {}),
+          ...(raw.installments?.total !== undefined ? { total: raw.installments.total } : {}),
+          ...(monthlyAmountPending ? { monthlyAmountPending: true } : {}),
+        }
       : undefined;
 
     return {
@@ -865,7 +876,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
       merchant: raw.merchantName || raw.description?.description || "לא ידוע",
       amount: Math.abs(amount),
       ...(raw.status ? { status: raw.status.toUpperCase() } : {}),
-      ...(originalAmount !== undefined && Math.abs(originalAmount) !== Math.abs(amount)
+      ...(originalAmount !== undefined && (Math.abs(originalAmount) !== Math.abs(amount) || monthlyAmountPending)
         ? { originalAmount: Math.abs(originalAmount) }
         : {}),
       ...(installment ? { installment } : {}),

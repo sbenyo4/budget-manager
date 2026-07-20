@@ -122,6 +122,9 @@ function changedPreferences(previous: BudgetPreferences, next: BudgetPreferences
   if (JSON.stringify(previous.sectionOverrides) !== JSON.stringify(next.sectionOverrides)) {
     patch.sectionOverrides = next.sectionOverrides;
   }
+  if (JSON.stringify(previous.installmentOverrides) !== JSON.stringify(next.installmentOverrides)) {
+    patch.installmentOverrides = next.installmentOverrides;
+  }
   if (JSON.stringify(previous.oneTimeExpenses) !== JSON.stringify(next.oneTimeExpenses)) {
     patch.oneTimeExpenses = next.oneTimeExpenses;
   }

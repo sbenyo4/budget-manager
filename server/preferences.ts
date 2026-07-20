@@ -30,6 +30,21 @@ function stringRecord(value: unknown): Record<string, string> {
   );
 }
 
+function installmentRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key, item]) =>
+        key.length <= MAX_PREFERENCE_TEXT &&
+        typeof item === "number" &&
+        Number.isInteger(item) &&
+        item >= 2 &&
+        item <= 120
+      )
+      .slice(0, MAX_PREFERENCE_ITEMS)
+  );
+}
+
 export function normalizePreferences(body: Partial<BudgetPreferences>): BudgetPreferences {
   return { ...PREFS_DEFAULT, ...normalizePreferencesPatch(body) };
 }
@@ -43,6 +58,9 @@ export function normalizePreferencesPatch(body: Partial<BudgetPreferences>): Par
 
   if (body.sectionOverrides && typeof body.sectionOverrides === "object" && !Array.isArray(body.sectionOverrides)) {
     patch.sectionOverrides = stringRecord(body.sectionOverrides);
+  }
+  if (body.installmentOverrides && typeof body.installmentOverrides === "object" && !Array.isArray(body.installmentOverrides)) {
+    patch.installmentOverrides = installmentRecord(body.installmentOverrides);
   }
   if (Array.isArray(body.oneTimeExpenses)) patch.oneTimeExpenses = stringArray(body.oneTimeExpenses);
   if (Array.isArray(body.fixedExpenses)) patch.fixedExpenses = stringArray(body.fixedExpenses);

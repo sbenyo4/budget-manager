@@ -9,6 +9,7 @@ export interface AuthUser {
 
 export interface BudgetPreferences {
   sectionOverrides: Record<string, string>;
+  installmentOverrides: Record<string, number>;
   oneTimeExpenses: string[];
   fixedExpenses: string[];
   highAmountThreshold: number;
@@ -36,6 +37,7 @@ export interface AIAnalysisCacheRecord<T = unknown> {
 
 export const PREFS_DEFAULT: BudgetPreferences = {
   sectionOverrides: {},
+  installmentOverrides: {},
   oneTimeExpenses: [],
   fixedExpenses: [],
   highAmountThreshold: 5000,
