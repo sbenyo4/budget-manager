@@ -4,6 +4,7 @@ import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { cardDebitCutoffs, isCardDebit, isCardTransactionCharged, isConsumption } from "../logic/flows";
 import { fixedExpenseKey, fixedExpenseKeysFor } from "../logic/expenseScope";
+import { summarizePendingBillingMonths } from "../logic/pendingBilling";
 import type { BudgetPreferences } from "../api/preferences";
 import { displaySubLabel, mainColor } from "../logic/categoryNames";
 import {
@@ -103,6 +104,10 @@ function normalizeSearchText(value: string): string {
 
 function formatShortDate(value: string): string {
   return new Date(`${value}T00:00:00`).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+}
+
+function formatMonthLabel(value: string): string {
+  return new Date(`${value}-01T00:00:00`).toLocaleDateString("he-IL", { month: "long", year: "numeric" });
 }
 
 function addIsoDays(value: string, days: number): string {
@@ -467,6 +472,7 @@ export function MonthlyView({
   const [excludedCategories, setExcludedCategories] = useState<Set<string>>(() => new Set());
   const [excludedTransactionIds, setExcludedTransactionIds] = useState<Set<string>>(() => new Set());
   const [pendingDetailsOpen, setPendingDetailsOpen] = useState(false);
+  const [pendingMonthFilter, setPendingMonthFilter] = useState<string | null>(null);
   const [expenseScope, setExpenseScope] = useState<ExpenseScope>("all");
   const [categoryViewMode, setCategoryViewMode] = useState<CategoryViewMode>("transactions");
   const sectionOverrides = preferences.sectionOverrides;
@@ -625,6 +631,24 @@ export function MonthlyView({
     }
     return [...summaries.values()].sort((a, b) => (a.billingDate ?? "9999-99-99").localeCompare(b.billingDate ?? "9999-99-99"));
   }, [pendingGroups]);
+  const pendingMonthlySummaries = useMemo(
+    () => summarizePendingBillingMonths(pendingBillingSummaries),
+    [pendingBillingSummaries]
+  );
+  const visiblePendingGroups = useMemo(
+    () => pendingMonthFilter === null
+      ? pendingGroups
+      : pendingGroups.filter((group) => (group.billingDate?.slice(0, 7) ?? "next") === pendingMonthFilter),
+    [pendingGroups, pendingMonthFilter]
+  );
+  useEffect(() => {
+    if (
+      pendingMonthFilter !== null &&
+      !pendingMonthlySummaries.some((summary) => (summary.monthKey ?? "next") === pendingMonthFilter)
+    ) {
+      setPendingMonthFilter(null);
+    }
+  }, [pendingMonthFilter, pendingMonthlySummaries]);
   const currentMonthKey = todayIso().slice(0, 7);
   const selectedPendingMonth = useMemo(() => {
     const dated = pendingBillingSummaries.filter((summary) => summary.billingDate);
@@ -1074,9 +1098,34 @@ export function MonthlyView({
                 : "אין עסקאות להצגה"}
             </span>
           </div>
+          {pendingMonthlySummaries.length > 0 && (
+            <div className="pending-month-summary" aria-label="סיכום חיובים לפי חודש">
+              {pendingMonthlySummaries.map((summary) => (
+                <button
+                  type="button"
+                  key={summary.monthKey ?? "next"}
+                  className={`pending-month-summary-item ${pendingMonthFilter === (summary.monthKey ?? "next") ? "active" : ""}`}
+                  onClick={() => setPendingMonthFilter((selected) =>
+                    selected === (summary.monthKey ?? "next") ? null : (summary.monthKey ?? "next")
+                  )}
+                  aria-pressed={pendingMonthFilter === (summary.monthKey ?? "next")}
+                  title={pendingMonthFilter === (summary.monthKey ?? "next") ? "הצגת כל החודשים" : "סינון הפירוט לחודש זה"}
+                >
+                  <span>{summary.monthKey ? formatMonthLabel(summary.monthKey) : "החיוב הבא"}</span>
+                  <strong>{formatILS(summary.total)}</strong>
+                  <small>
+                    {summary.count} עסקאות
+                    {summary.pendingInstallmentCount > 0
+                      ? ` · ${summary.pendingInstallmentCount} תשלומים ללא סכום חודשי`
+                      : ""}
+                  </small>
+                </button>
+              ))}
+            </div>
+          )}
           {pendingGroups.length > 0 ? (
             <div className="pending-card-groups">
-              {pendingGroups.map((group) => (
+              {visiblePendingGroups.map((group) => (
                 <div key={`${group.billingDate ?? "next"}-${group.cardLast4 ?? "card"}`} className="pending-card-group">
                   <div className="pending-card-group-head">
                     <span>
