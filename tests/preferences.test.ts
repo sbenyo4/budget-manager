@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizePreferences, normalizePreferencesPatch } from "../server/preferences.ts";
+import { wereAlertApprovalsPersisted } from "../src/api/preferences.ts";
 
 test("preference normalization rejects malformed nested values and impossible dates", () => {
   const normalized = normalizePreferences({
@@ -52,4 +53,40 @@ test("installment overrides retain only bounded integer installment counts", () 
   });
 
   assert.deepEqual(normalized.installmentOverrides, { "card:real-transaction": 4 });
+});
+
+test("alert approvals retain only safe numeric baselines", () => {
+  const normalized = normalizePreferences({
+    alertApprovals: {
+      "price:netflix": 65,
+      "transaction:approved": 7_500,
+      "transaction:invalid": Number.POSITIVE_INFINITY,
+      "merchant:invalid": -1,
+    },
+  });
+
+  assert.deepEqual(normalized.alertApprovals, {
+    "price:netflix": 65,
+    "transaction:approved": 7_500,
+  });
+});
+
+test("the client accepts an alert approval only when the server echoes every saved baseline", () => {
+  const requested = {
+    "price:netflix": 65,
+    "transaction:approved": 7_500,
+  };
+
+  assert.equal(wereAlertApprovalsPersisted(requested, undefined), false);
+  assert.equal(wereAlertApprovalsPersisted({}, undefined), false);
+  assert.equal(wereAlertApprovalsPersisted({}, {}), true);
+  assert.equal(wereAlertApprovalsPersisted(requested, { "price:netflix": 65 }), false);
+  assert.equal(
+    wereAlertApprovalsPersisted(requested, {
+      "price:netflix": 65,
+      "transaction:approved": 7_500,
+      "merchant:existing": 1,
+    }),
+    true
+  );
 });

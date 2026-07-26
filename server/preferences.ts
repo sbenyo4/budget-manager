@@ -45,6 +45,22 @@ function installmentRecord(value: unknown): Record<string, number> {
   );
 }
 
+function amountRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(
+        ([key, item]) =>
+          key.length <= MAX_PREFERENCE_TEXT &&
+          typeof item === "number" &&
+          Number.isFinite(item) &&
+          item >= 0 &&
+          item <= 1_000_000_000
+      )
+      .slice(0, MAX_PREFERENCE_ITEMS)
+  );
+}
+
 export function normalizePreferences(body: Partial<BudgetPreferences>): BudgetPreferences {
   return { ...PREFS_DEFAULT, ...normalizePreferencesPatch(body) };
 }
@@ -64,6 +80,9 @@ export function normalizePreferencesPatch(body: Partial<BudgetPreferences>): Par
   }
   if (Array.isArray(body.oneTimeExpenses)) patch.oneTimeExpenses = stringArray(body.oneTimeExpenses);
   if (Array.isArray(body.fixedExpenses)) patch.fixedExpenses = stringArray(body.fixedExpenses);
+  if (body.alertApprovals && typeof body.alertApprovals === "object" && !Array.isArray(body.alertApprovals)) {
+    patch.alertApprovals = amountRecord(body.alertApprovals);
+  }
   if (Number.isFinite(threshold) && threshold >= 0 && threshold <= 1_000_000_000) {
     patch.highAmountThreshold = threshold;
   }

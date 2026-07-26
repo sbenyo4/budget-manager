@@ -25,11 +25,17 @@ import type { Transaction } from "./types";
 import { MonthlyView } from "./components/MonthlyView";
 import { TrendsView } from "./components/TrendsView";
 import { AIAnalysisView } from "./components/AIAnalysisView";
+import { AlertsView } from "./components/AlertsView";
 import { useAutoLogout } from "./hooks/useAutoLogout";
+import {
+  detectTransactionAlerts,
+  mergeAlertApprovals,
+  type TransactionAlert,
+} from "./logic/transactionAlerts";
 
 type ThemeMode = "light" | "dark";
 type PinGateMode = "checking" | "setup" | "locked" | "unlocked" | "unavailable";
-type AppView = "monthly" | "trends" | "ai";
+type AppView = "monthly" | "trends" | "alerts" | "ai";
 type SettingsPreferences = Pick<
   BudgetPreferences,
   "highAmountThreshold" | "householdBirthDate" | "householdAge" | "householdSize" | "autoLogoutMinutes"
@@ -130,6 +136,9 @@ function changedPreferences(previous: BudgetPreferences, next: BudgetPreferences
   }
   if (JSON.stringify(previous.fixedExpenses) !== JSON.stringify(next.fixedExpenses)) {
     patch.fixedExpenses = next.fixedExpenses;
+  }
+  if (JSON.stringify(previous.alertApprovals) !== JSON.stringify(next.alertApprovals)) {
+    patch.alertApprovals = next.alertApprovals;
   }
   return patch;
 }
@@ -498,6 +507,70 @@ function BudgetApp() {
 
   const periods = useMemo(() => buildPeriods(learnedTransactions), [learnedTransactions]);
   const displayTransactions = useMemo(() => tagSalaries(learnedTransactions), [learnedTransactions]);
+  const activeAlerts = useMemo(
+    () =>
+      detectTransactionAlerts(displayTransactions, {
+        highAmountThreshold: preferences.highAmountThreshold,
+        fixedExpenses: preferences.fixedExpenses,
+        approvals: preferences.alertApprovals,
+      }),
+    [
+      displayTransactions,
+      preferences.alertApprovals,
+      preferences.fixedExpenses,
+      preferences.highAmountThreshold,
+    ]
+  );
+  const persistAlertApprovals = useCallback(
+    (alertApprovals: Record<string, number>): Promise<void> => {
+      const previousPreferences = preferencesRef.current;
+      const optimisticPreferences = { ...previousPreferences, alertApprovals };
+      const saveSeq = preferencesSaveSeq.current + 1;
+      preferencesSaveSeq.current = saveSeq;
+      // Approval is safe to reflect immediately. The server remains the source
+      // of truth: a failed request restores the previous approvals and exposes
+      // the error instead of leaving an alert silently dismissed.
+      preferencesRef.current = optimisticPreferences;
+      setPreferences(optimisticPreferences);
+      setSaveState("saving");
+      const saveRequest = preferencesSaveQueueRef.current.then(() =>
+        patchPreferences({ alertApprovals })
+      );
+      preferencesSaveQueueRef.current = saveRequest.then(() => undefined, () => undefined);
+      return saveRequest
+        .then((saved) => {
+          if (preferencesSaveSeq.current !== saveSeq) return;
+          preferencesRef.current = saved;
+          setPreferences(saved);
+          setSaveState("saved");
+        })
+        .catch((err: unknown) => {
+          if (preferencesSaveSeq.current === saveSeq) {
+            const rolledBack = {
+              ...preferencesRef.current,
+              alertApprovals: previousPreferences.alertApprovals,
+            };
+            preferencesRef.current = rolledBack;
+            setPreferences(rolledBack);
+            setSaveState("error");
+          }
+          setError(err instanceof Error ? err.message : String(err));
+          throw err;
+        });
+    },
+    []
+  );
+  const handleAlertApprove = useCallback(
+    (alerts: TransactionAlert[]): Promise<void> =>
+      persistAlertApprovals(
+        mergeAlertApprovals(preferencesRef.current.alertApprovals, alerts)
+      ),
+    [persistAlertApprovals]
+  );
+  const handleAlertReset = useCallback(
+    (): Promise<void> => persistAlertApprovals({}),
+    [persistAlertApprovals]
+  );
 
   if (authLoading || preferencesLoading) {
     return <div className="app"><div className="loading">טוען התחברות…</div></div>;
@@ -559,6 +632,7 @@ function BudgetApp() {
           <h1>
             {view === "monthly" && "תקציב חודשי"}
             {view === "trends" && "מגמות וממוצעים"}
+            {view === "alerts" && "התראות ובדיקת עסקאות"}
             {view === "ai" && "ניתוח AI"}
           </h1>
           {view === "monthly" && (
@@ -566,6 +640,9 @@ function BudgetApp() {
           )}
           {view === "trends" && (
             <p className="subtitle">צבירה וממוצעים על פני תקופות — הכנסות, הוצאות וחיסכון בני״ע</p>
+          )}
+          {view === "alerts" && (
+            <p className="subtitle">עליות מחיר, חיובים חריגים ועסקאות שכדאי לוודא</p>
           )}
           {view === "ai" && (
             <p className="subtitle">ציון תקציבי והמלצות פעולה על בסיס הנתונים בתקופה</p>
@@ -654,6 +731,14 @@ function BudgetApp() {
             <button className={`tab ${view === "trends" ? "active" : ""}`} onClick={() => setView("trends")}>
               מגמות
             </button>
+            <button className={`tab alert-tab ${view === "alerts" ? "active" : ""}`} onClick={() => setView("alerts")}>
+              התראות
+              {activeAlerts.length > 0 && (
+                <span className="alert-tab-count" aria-label={`${activeAlerts.length} התראות פעילות`}>
+                  {activeAlerts.length}
+                </span>
+              )}
+            </button>
             <button className={`tab ${view === "ai" ? "active" : ""}`} onClick={() => setView("ai")}>
               ניתוח AI
             </button>
@@ -668,6 +753,7 @@ function BudgetApp() {
           preferences={preferences}
           onClose={() => setSettingsOpen(false)}
           onSave={handleServiceSettingsSave}
+          onResetAlerts={handleAlertReset}
         />
       )}
       {loading && <div className="loading">טוען עסקאות…</div>}
@@ -698,7 +784,12 @@ function BudgetApp() {
           bankBalance={bankBalance}
           preferences={preferences}
           onPreferencesChange={updatePreferences}
+          onAlertApprove={handleAlertApprove}
         />
+      )}
+
+      {!loading && !error && !serviceSettingsRequired && view === "alerts" && (
+        <AlertsView alerts={activeAlerts} onApprove={handleAlertApprove} />
       )}
 
       {!loading && !error && !serviceSettingsRequired && view === "ai" && (
@@ -717,6 +808,7 @@ function ServiceSettingsModal({
   preferences,
   onClose,
   onSave,
+  onResetAlerts,
 }: {
   settings: ServiceSettings;
   preferences: BudgetPreferences;
@@ -725,6 +817,7 @@ function ServiceSettingsModal({
     settings: ServiceSettings,
     profile: SettingsPreferences
   ) => Promise<void>;
+  onResetAlerts: () => Promise<void>;
 }) {
   const [draft, setDraft] = useState<ServiceSettings>(settings);
   const [highAmountThreshold, setHighAmountThreshold] = useState(String(preferences.highAmountThreshold));
@@ -736,6 +829,9 @@ function ServiceSettingsModal({
   const [showSecret, setShowSecret] = useState(false);
   const [aiModels, setAiModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [resettingAlerts, setResettingAlerts] = useState(false);
+  const [resetMessage, setResetMessage] = useState("");
 
   useEffect(() => {
     setDraft(settings);
@@ -802,6 +898,7 @@ function ServiceSettingsModal({
     ],
   };
   const modelOptions = aiModels.length > 0 ? aiModels : providerModelOptions[draft.aiProvider];
+  const approvedAlertCount = Object.keys(preferences.alertApprovals).length;
 
   useEffect(() => {
     if (modelOptions.length > 0 && !modelOptions.includes(draft.aiModel)) {
@@ -847,6 +944,18 @@ function ServiceSettingsModal({
     })
       .catch((err: unknown) => setMessage(err instanceof Error ? err.message : String(err)))
       .finally(() => setSaving(false));
+  };
+
+  const handleResetAlerts = () => {
+    setResettingAlerts(true);
+    setResetMessage("");
+    onResetAlerts()
+      .then(() => {
+        setResetConfirmOpen(false);
+        setResetMessage("אישורי ההתראות אופסו. התראות רלוונטיות יוצגו מחדש.");
+      })
+      .catch((err: unknown) => setMessage(err instanceof Error ? err.message : String(err)))
+      .finally(() => setResettingAlerts(false));
   };
 
   return (
@@ -1018,6 +1127,43 @@ function ServiceSettingsModal({
                 onChange={(event) => setAutoLogoutMinutes(event.target.value)}
               />
             </label>
+          </fieldset>
+          <fieldset className="alert-reset-settings">
+            <legend>התראות</legend>
+            <p>
+              {approvedAlertCount > 0
+                ? `${approvedAlertCount} אישורי התראות שמורים בחשבון.`
+                : "אין כרגע אישורי התראות שמורים."}
+            </p>
+            {!resetConfirmOpen ? (
+              <button
+                className="table-toggle danger-action"
+                type="button"
+                disabled={approvedAlertCount === 0}
+                onClick={() => {
+                  setResetMessage("");
+                  setResetConfirmOpen(true);
+                }}
+              >
+                איפוס אישורי התראות
+              </button>
+            ) : (
+              <div className="alert-reset-confirm" role="group" aria-label="אישור איפוס התראות">
+                <p>כל ההתראות שאושרו בעבר עשויות להופיע שוב. להמשיך?</p>
+                <button className="table-toggle" type="button" onClick={() => setResetConfirmOpen(false)}>
+                  ביטול
+                </button>
+                <button
+                  className="table-toggle danger-action"
+                  type="button"
+                  disabled={resettingAlerts}
+                  onClick={handleResetAlerts}
+                >
+                  {resettingAlerts ? "מאפס בשרת…" : "כן, לאפס"}
+                </button>
+              </div>
+            )}
+            {resetMessage && <div className="settings-success" role="status">{resetMessage}</div>}
           </fieldset>
           {message && <div className="error-box">{message}</div>}
           <div className="settings-actions">

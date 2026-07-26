@@ -12,6 +12,7 @@ export interface BudgetPreferences {
   installmentOverrides: Record<string, number>;
   oneTimeExpenses: string[];
   fixedExpenses: string[];
+  alertApprovals: Record<string, number>;
   highAmountThreshold: number;
   householdBirthDate: string | null;
   householdAge: number | null;
@@ -40,6 +41,7 @@ export const PREFS_DEFAULT: BudgetPreferences = {
   installmentOverrides: {},
   oneTimeExpenses: [],
   fixedExpenses: [],
+  alertApprovals: {},
   highAmountThreshold: 5000,
   householdBirthDate: null,
   householdAge: null,
@@ -279,6 +281,59 @@ export async function patchStoredPreferences(
     RETURNING data
   `) as Array<{ data: BudgetPreferences }>;
   return { ...PREFS_DEFAULT, ...(rows[0]?.data ?? {}) };
+}
+
+async function patchPreferencesForSessionQuery(
+  tokenHash: string,
+  now: number,
+  patch: Partial<BudgetPreferences>
+): Promise<BudgetPreferences | null> {
+  const inserted = { ...PREFS_DEFAULT, ...patch };
+  const rows = (await sql()`
+    WITH authenticated AS (
+      SELECT user_id
+      FROM sessions
+      WHERE token_hash = ${tokenHash} AND expires_at > ${now}
+      LIMIT 1
+    )
+    INSERT INTO preferences (user_id, data, updated_at)
+    SELECT user_id, ${JSON.stringify(inserted)}::jsonb, NOW()
+    FROM authenticated
+    ON CONFLICT (user_id) DO UPDATE SET
+      data = preferences.data || ${JSON.stringify(patch)}::jsonb,
+      updated_at = NOW()
+    RETURNING data
+  `) as Array<{ data: BudgetPreferences }>;
+  const data = rows[0]?.data;
+  return data ? { ...PREFS_DEFAULT, ...data } : null;
+}
+
+function isMissingTableError(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "42P01"
+  );
+}
+
+/**
+ * Authenticates the bearer session and updates preferences in one Neon
+ * round-trip. A valid session implies that the schema already exists, so the
+ * expensive DDL bootstrap is only used as a recovery path for a fresh DB.
+ */
+export async function patchStoredPreferencesForSession(
+  sessionTokenHash: string,
+  now: number,
+  patch: Partial<BudgetPreferences>
+): Promise<BudgetPreferences | null> {
+  try {
+    return await patchPreferencesForSessionQuery(sessionTokenHash, now, patch);
+  } catch (error) {
+    if (!isMissingTableError(error)) throw error;
+    await ensureSchema();
+    return patchPreferencesForSessionQuery(sessionTokenHash, now, patch);
+  }
 }
 
 export async function getServiceSettings(userId: string): Promise<ServiceSettings> {

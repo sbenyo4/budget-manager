@@ -16,6 +16,11 @@ import {
 } from "../logic/categoryOverrides";
 import { Donut, type CategoryChoice, type DonutSlice, type DonutSliceDetail } from "./Donut";
 import { formatILS, formatILSWhole } from "./format";
+import {
+  detectTransactionAlerts,
+  type TransactionAlert,
+} from "../logic/transactionAlerts";
+import { AlertsView } from "./AlertsView";
 
 interface Props {
   transactions: Transaction[];
@@ -24,6 +29,7 @@ interface Props {
   bankBalance: { balance: number; date: string } | null;
   preferences: BudgetPreferences;
   onPreferencesChange: (preferences: BudgetPreferences) => void;
+  onAlertApprove: (alerts: TransactionAlert[]) => Promise<void>;
 }
 
 interface PeriodMetrics {
@@ -384,6 +390,7 @@ export function TrendsView({
   bankBalance,
   preferences,
   onPreferencesChange,
+  onAlertApprove,
 }: Props) {
   const [range, setRange] = useState<number | "all">(6);
   const [category, setCategory] = useState<string | null>(null);
@@ -424,6 +431,35 @@ export function TrendsView({
   const fixedExpenseKeys = useMemo(
     () => fixedExpenseKeysFor(searchedTransactions, chosen, rangeFrom, rangeTo, oneTimeExpenses, fixedExpenses),
     [searchedTransactions, chosen, fixedExpenses, oneTimeExpenses, rangeFrom, rangeTo]
+  );
+  const trendAlertTransactions = useMemo(
+    () =>
+      searchedTransactions.filter((tx) => {
+        if (tx.type === "income") return false;
+        if (category && tx.categoryMain !== category) return false;
+        if (excludedCategories.has(tx.categoryMain)) return false;
+        return isInExpenseScope(tx, expenseScope, fixedExpenseKeys);
+      }),
+    [category, excludedCategories, expenseScope, fixedExpenseKeys, searchedTransactions]
+  );
+  const periodAlerts = useMemo(
+    () =>
+      detectTransactionAlerts(trendAlertTransactions, {
+        highAmountThreshold,
+        fixedExpenses: preferences.fixedExpenses,
+        approvals: preferences.alertApprovals,
+        alertFrom: rangeFrom,
+        alertTo: rangeTo,
+        includeHistoricalPriceChanges: true,
+      }),
+    [
+      highAmountThreshold,
+      preferences.alertApprovals,
+      preferences.fixedExpenses,
+      rangeFrom,
+      rangeTo,
+      trendAlertTransactions,
+    ]
   );
   const rows = useMemo(
     () =>
@@ -787,6 +823,16 @@ export function TrendsView({
           )}
         </div>
       )}
+
+      <div className="trend-period-alerts">
+        <AlertsView
+          alerts={periodAlerts}
+          onApprove={onAlertApprove}
+          title={`התראות בתקופה שנבחרה${periodAlerts.length ? ` (${periodAlerts.length})` : ""}`}
+          description={`שינויים וחריגות בין ${rangeFrom} ל-${rangeTo}, בהתאם למסננים הפעילים.`}
+          showSummary={false}
+        />
+      </div>
 
       <div className="donut-grid">
         <Donut

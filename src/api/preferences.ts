@@ -12,6 +12,7 @@ export interface BudgetPreferences {
   installmentOverrides: Record<string, number>;
   oneTimeExpenses: string[];
   fixedExpenses: string[];
+  alertApprovals: Record<string, number>;
   highAmountThreshold: number;
   householdBirthDate: string | null;
   householdAge: number | null;
@@ -35,6 +36,7 @@ export const emptyPreferences: BudgetPreferences = {
   installmentOverrides: {},
   oneTimeExpenses: [],
   fixedExpenses: [],
+  alertApprovals: {},
   highAmountThreshold: 5000,
   householdBirthDate: null,
   householdAge: null,
@@ -69,6 +71,18 @@ function normalizeClientPreferences(value: Partial<BudgetPreferences>): BudgetPr
         : emptyPreferences.installmentOverrides,
     oneTimeExpenses: Array.isArray(value.oneTimeExpenses) ? value.oneTimeExpenses : emptyPreferences.oneTimeExpenses,
     fixedExpenses: Array.isArray(value.fixedExpenses) ? value.fixedExpenses : emptyPreferences.fixedExpenses,
+    alertApprovals:
+      value.alertApprovals && typeof value.alertApprovals === "object" && !Array.isArray(value.alertApprovals)
+        ? Object.fromEntries(
+            Object.entries(value.alertApprovals).filter(
+              ([key, amount]) =>
+                key.length <= 300 &&
+                typeof amount === "number" &&
+                Number.isFinite(amount) &&
+                amount >= 0
+            )
+          )
+        : emptyPreferences.alertApprovals,
     autoLogoutMinutes:
       Number.isInteger(value.autoLogoutMinutes) &&
       Number(value.autoLogoutMinutes) >= 1 &&
@@ -138,11 +152,30 @@ export async function savePreferences(preferences: BudgetPreferences): Promise<B
   return lastKnownPreferences;
 }
 
+export function wereAlertApprovalsPersisted(
+  requested: Record<string, number>,
+  persisted: unknown
+): boolean {
+  return (
+    Boolean(persisted) &&
+    typeof persisted === "object" &&
+    !Array.isArray(persisted) &&
+    Object.entries(requested).every(
+      ([key, value]) => (persisted as Record<string, unknown>)[key] === value
+    )
+  );
+}
+
 export async function patchPreferences(preferences: Partial<BudgetPreferences>): Promise<BudgetPreferences> {
   const saved = await apiJson<Partial<BudgetPreferences>>("/api/preferences", {
     method: "PATCH",
     body: JSON.stringify(preferences),
   });
+  if (preferences.alertApprovals) {
+    if (!wereAlertApprovalsPersisted(preferences.alertApprovals, saved.alertApprovals)) {
+      throw new Error("האישור לא נשמר בשרת. יש לעדכן את שירות ה-API ולנסות שוב.");
+    }
+  }
   lastKnownPreferences = normalizeClientPreferences({ ...lastKnownPreferences, ...saved, ...preferences });
   return lastKnownPreferences;
 }
