@@ -1234,7 +1234,16 @@ function PinGate({
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const lastAttemptRef = useRef("");
+  const pinInputRef = useRef<HTMLInputElement>(null);
   const isSetup = mode === "setup";
+
+  useEffect(() => {
+    if (mode !== "locked" && mode !== "setup") return;
+    const frame = window.requestAnimationFrame(() => {
+      pinInputRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [mode]);
 
   useEffect(() => {
     const attemptKey = `${mode}:${pin}:${confirmPin}`;
@@ -1313,6 +1322,7 @@ function PinGate({
           <label>
             PIN
             <input
+              ref={pinInputRef}
               autoFocus
               type="password"
               inputMode="numeric"
