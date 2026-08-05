@@ -122,13 +122,31 @@ export function getCurrentUser(): Promise<{ user: AuthUser | null }> {
   return apiJson("/api/auth/me");
 }
 
-export async function loginWithGoogle(credential: string): Promise<{ user: AuthUser }> {
-  const result = await apiJson<{ user: AuthUser; token: string }>("/api/auth/google", {
+export async function loginWithGoogle(credential: string): Promise<{
+  user: AuthUser;
+  preferences: BudgetPreferences;
+  hasPin: boolean;
+}> {
+  const result = await apiJson<{
+    user: AuthUser;
+    token: string;
+    preferences?: Partial<BudgetPreferences>;
+    hasPin?: boolean;
+  }>("/api/auth/google", {
     method: "POST",
     body: JSON.stringify({ credential }),
   });
   setAuthToken(result.token);
-  return { user: result.user };
+  if (result.preferences && typeof result.hasPin === "boolean") {
+    lastKnownPreferences = normalizeClientPreferences(result.preferences);
+    return { user: result.user, preferences: lastKnownPreferences, hasPin: result.hasPin };
+  }
+
+  // Temporary compatibility for a locally running client pointed at an older
+  // deployment. These requests run in parallel instead of recreating the old
+  // sequential login waterfall.
+  const [preferences, { hasPin }] = await Promise.all([loadPreferences(), getPinStatus()]);
+  return { user: result.user, preferences, hasPin };
 }
 
 export function logout(): Promise<{ ok: true }> {

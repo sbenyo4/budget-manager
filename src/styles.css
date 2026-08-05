@@ -357,6 +357,83 @@ h1 {
   font-size: 0.82rem;
 }
 
+.auth-progress-panel {
+  max-width: 460px;
+}
+
+.auth-progress-icon {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+}
+
+.auth-progress-check {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--must);
+  color: #ffffff;
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+
+.auth-progress-spinner {
+  position: absolute;
+  inset: 0;
+  border: 3px solid var(--border);
+  border-top-color: var(--must);
+  border-radius: 50%;
+  animation: auth-progress-spin 0.9s linear infinite;
+}
+
+.auth-progress-steps {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.auth-progress-steps span {
+  border-top: 3px solid var(--border);
+  padding-top: 8px;
+}
+
+.auth-progress-steps .complete,
+.auth-progress-steps .active {
+  border-top-color: var(--must);
+  color: var(--text-secondary);
+}
+
+.auth-progress-steps .complete::after {
+  content: " ✓";
+  color: var(--must);
+  font-weight: 800;
+}
+
+.auth-progress-note {
+  margin: -4px 0 0;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+
+@keyframes auth-progress-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-progress-spinner {
+    animation: none;
+  }
+}
+
 .pin-panel {
   max-width: 420px;
 }

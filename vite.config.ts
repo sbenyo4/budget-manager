@@ -422,7 +422,12 @@ function preferencesAuth(env: Record<string, string>): Plugin {
           const token = randomBytes(32).toString("base64url");
           const maxAge = 60 * 60 * 12;
           insertSession.run(tokenHash(token), user.id, Date.now() + maxAge * 1000);
-          sendJson(res, 200, { user, token });
+          const preferencesRow = getPrefs.get(user.id) as { data: string } | undefined;
+          const preferences = preferencesRow
+            ? normalizePreferences(JSON.parse(preferencesRow.data))
+            : PREFS_DEFAULT;
+          const hasPin = Boolean(getPinCredential.get(user.id));
+          sendJson(res, 200, { user, token, preferences, hasPin });
         })
         .catch((err: unknown) => sendJson(res, 401, { error: err instanceof Error ? err.message : String(err) }));
       return;

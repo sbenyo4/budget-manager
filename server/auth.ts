@@ -15,6 +15,40 @@ interface GooglePayload {
   exp?: number;
 }
 
+type GoogleJwk = JsonWebKey & { kid?: string };
+
+let cachedGoogleKeys: { keys: GoogleJwk[]; expiresAt: number } | null = null;
+let googleKeysRequest: Promise<{ keys: GoogleJwk[]; expiresAt: number }> | null = null;
+
+function googleKeysMaxAge(cacheControl: string | null): number {
+  const maxAge = /(?:^|,)\s*max-age=(\d+)/i.exec(cacheControl ?? "")?.[1];
+  const seconds = maxAge ? Number(maxAge) : 3600;
+  return Math.max(60, Math.min(seconds, 86_400)) * 1000;
+}
+
+async function getGoogleSigningKeys(): Promise<GoogleJwk[]> {
+  const now = Date.now();
+  if (cachedGoogleKeys && cachedGoogleKeys.expiresAt > now) return cachedGoogleKeys.keys;
+  if (!googleKeysRequest) {
+    googleKeysRequest = (async () => {
+      const certsRes = await fetchWithTimeout("https://www.googleapis.com/oauth2/v3/certs");
+      if (!certsRes.ok) throw new Error(`Google certs failed (${certsRes.status})`);
+      const certs = (await certsRes.json()) as { keys?: GoogleJwk[] };
+      if (!certs.keys?.length) throw new Error("Google signing keys are unavailable");
+      return {
+        keys: certs.keys,
+        expiresAt: Date.now() + googleKeysMaxAge(certsRes.headers.get("cache-control")),
+      };
+    })();
+  }
+  try {
+    cachedGoogleKeys = await googleKeysRequest;
+    return cachedGoogleKeys.keys;
+  } finally {
+    googleKeysRequest = null;
+  }
+}
+
 function base64UrlJson<T>(value: string): T {
   return JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as T;
 }
@@ -52,10 +86,8 @@ export async function verifyGoogleCredential(credential: string, clientId: strin
   const payload = base64UrlJson<GooglePayload>(encodedPayload);
   if (header.alg !== "RS256" || !header.kid) throw new Error("Unsupported Google credential");
 
-  const certsRes = await fetchWithTimeout("https://www.googleapis.com/oauth2/v3/certs");
-  if (!certsRes.ok) throw new Error(`Google certs failed (${certsRes.status})`);
-  const certs = (await certsRes.json()) as { keys?: Array<JsonWebKey & { kid?: string }> };
-  const jwk = certs.keys?.find((key) => key.kid === header.kid);
+  const keys = await getGoogleSigningKeys();
+  const jwk = keys.find((key) => key.kid === header.kid);
   if (!jwk) throw new Error("Google signing key not found");
 
   const ok = verifySignature(

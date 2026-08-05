@@ -4,7 +4,7 @@ import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { cardDebitCutoffs, isCardDebit, isCardTransactionCharged, isConsumption } from "../logic/flows";
 import { fixedExpenseKey, fixedExpenseKeysFor } from "../logic/expenseScope";
-import { summarizePendingBillingMonths } from "../logic/pendingBilling";
+import { selectPendingCardTransactions, summarizePendingBillingMonths } from "../logic/pendingBilling";
 import type { BudgetPreferences } from "../api/preferences";
 import { displaySubLabel, mainColor } from "../logic/categoryNames";
 import {
@@ -562,7 +562,10 @@ export function MonthlyView({
   const balanceAtPeriodStart = balanceAtPeriodEnd === null ? null : balanceAtPeriodEnd - accountNet;
 
   // Upcoming bill: card activity not yet debited
-  const pendingCard = useMemo(() => filteredCardTxs.filter(isPending), [filteredCardTxs, isPending]);
+  const pendingCard = useMemo(
+    () => selectPendingCardTransactions(categorizedTransactions, debitCutoffs, cardFilter),
+    [cardFilter, categorizedTransactions, debitCutoffs]
+  );
   const pendingInstallmentDetails = useMemo(
     () => pendingCard.filter((tx) => hasPendingMonthlyInstallmentAmount(tx, installmentOverrides[tx.id])),
     [installmentOverrides, pendingCard]

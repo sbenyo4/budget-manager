@@ -201,6 +201,67 @@ export async function insertSession(tokenHash: string, userId: string, expiresAt
   `;
 }
 
+async function createGoogleLoginSessionQuery(
+  user: AuthUser,
+  sessionTokenHash: string,
+  expiresAt: number
+): Promise<{ preferences: BudgetPreferences; hasPin: boolean }> {
+  const rows = (await sql()`
+    WITH expired_sessions AS (
+      DELETE FROM sessions
+      WHERE expires_at <= ${Date.now()}
+      RETURNING token_hash
+    ), upserted_user AS (
+      INSERT INTO users (id, email, name, picture, updated_at)
+      VALUES (${user.id}, ${user.email}, ${user.name}, ${user.picture}, NOW())
+      ON CONFLICT (id) DO UPDATE SET
+        email = EXCLUDED.email,
+        name = EXCLUDED.name,
+        picture = EXCLUDED.picture,
+        updated_at = NOW()
+      RETURNING id
+    ), created_session AS (
+      INSERT INTO sessions (token_hash, user_id, expires_at)
+      SELECT ${sessionTokenHash}, id, ${expiresAt}
+      FROM upserted_user
+      RETURNING user_id
+    )
+    SELECT
+      preferences.data,
+      EXISTS (
+        SELECT 1
+        FROM user_pins
+        WHERE user_pins.user_id = created_session.user_id
+      ) AS "hasPin"
+    FROM created_session
+    LEFT JOIN preferences ON preferences.user_id = created_session.user_id
+  `) as Array<{ data?: BudgetPreferences; hasPin: boolean }>;
+  const row = rows[0];
+  return {
+    preferences: { ...PREFS_DEFAULT, ...(row?.data ?? {}) },
+    hasPin: Boolean(row?.hasPin),
+  };
+}
+
+/**
+ * Creates the Google session and returns everything needed to render the PIN
+ * gate in one database round-trip. Normal requests skip schema DDL; a fresh
+ * database still self-recovers by initializing the schema and retrying once.
+ */
+export async function createGoogleLoginSession(
+  user: AuthUser,
+  sessionTokenHash: string,
+  expiresAt: number
+): Promise<{ preferences: BudgetPreferences; hasPin: boolean }> {
+  try {
+    return await createGoogleLoginSessionQuery(user, sessionTokenHash, expiresAt);
+  } catch (error) {
+    if (!isMissingTableError(error)) throw error;
+    await ensureSchema();
+    return createGoogleLoginSessionQuery(user, sessionTokenHash, expiresAt);
+  }
+}
+
 export async function deleteSession(tokenHash: string): Promise<void> {
   await ensureSchema();
   await sql()`DELETE FROM sessions WHERE token_hash = ${tokenHash}`;

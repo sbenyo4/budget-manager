@@ -200,6 +200,7 @@ function BudgetApp() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [googleClientId, setGoogleClientId] = useState("");
   const [authLoading, setAuthLoading] = useState(true);
+  const [authCompleting, setAuthCompleting] = useState(false);
   const [preferences, setPreferences] = useState<BudgetPreferences>(emptyPreferences);
   const [preferencesLoading, setPreferencesLoading] = useState(true);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
@@ -245,14 +246,14 @@ function BudgetApp() {
       setPinGate("checking");
       return;
     }
-    setPinGate("checking");
+    if (pinGate !== "checking") return;
     getPinStatus()
       .then(({ hasPin }) => setPinGate(hasPin ? "locked" : "setup"))
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : String(err));
         setPinGate("unavailable");
       });
-  }, [user]);
+  }, [pinGate, user]);
 
   useEffect(() => {
     let cancelled = false;
@@ -398,8 +399,9 @@ function BudgetApp() {
     return Promise.resolve(loaded);
   }, []);
 
-  const handleLogin = useCallback((nextUser: AuthUser, nextPrefs: BudgetPreferences) => {
-    setPinGate("checking");
+  const handleLogin = useCallback((nextUser: AuthUser, nextPrefs: BudgetPreferences, hasPin: boolean) => {
+    setAuthCompleting(false);
+    setPinGate(hasPin ? "locked" : "setup");
     setUser(nextUser);
     setPreferencesLoading(false);
     migratePreferencesIfNeeded(nextPrefs)
@@ -412,11 +414,18 @@ function BudgetApp() {
   }, [migratePreferencesIfNeeded]);
 
   const handleAuthError = useCallback((message: string) => {
+    setAuthCompleting(false);
     setError(message);
+  }, []);
+
+  const handleAuthStart = useCallback(() => {
+    setError(null);
+    setAuthCompleting(true);
   }, []);
 
   const handleLogout = useCallback(() => {
     const request = logout();
+    setAuthCompleting(false);
     setUser(null);
     setPinGate("checking");
     setAllTransactions([]);
@@ -577,6 +586,10 @@ function BudgetApp() {
   }
 
   if (!user) {
+    if (authCompleting) {
+      return <AuthProgress />;
+    }
+
     return (
       <div className="app">
         <section className="login-panel">
@@ -595,6 +608,7 @@ function BudgetApp() {
           <div className="login-card-actions">
             <GoogleLoginButton
               clientId={googleClientId}
+              onStart={handleAuthStart}
               onLogin={handleLogin}
               onError={handleAuthError}
             />
@@ -1180,6 +1194,30 @@ function ServiceSettingsModal({
   );
 }
 
+function AuthProgress({ email }: { email?: string }) {
+  return (
+    <div className="app">
+      <section className="login-panel auth-progress-panel" role="status" aria-live="polite">
+        <div className="auth-progress-icon" aria-hidden>
+          <span className="auth-progress-check">✓</span>
+          <span className="auth-progress-spinner" />
+        </div>
+        <h1>ההתחברות הושלמה</h1>
+        <p className="subtitle">
+          Google אישרה את החשבון. אנחנו טוענים את ההגדרות ומכינים את מסך ה-PIN.
+        </p>
+        {email && <p className="pin-user">{email}</p>}
+        <div className="auth-progress-steps" aria-hidden>
+          <span className="complete">Google</span>
+          <span className="active">הכנת החשבון</span>
+          <span>PIN</span>
+        </div>
+        <p className="auth-progress-note">זה עשוי להימשך כמה שניות…</p>
+      </section>
+    </div>
+  );
+}
+
 function PinGate({
   user,
   mode,
@@ -1238,7 +1276,7 @@ function PinGate({
   }, [confirmPin, isSetup, mode, onUnlock, pin]);
 
   if (mode === "checking") {
-    return <div className="app"><div className="loading">בודק PIN…</div></div>;
+    return <AuthProgress email={user.email} />;
   }
 
   if (mode === "unavailable") {
@@ -1312,11 +1350,13 @@ function PinGate({
 
 function GoogleLoginButton({
   clientId,
+  onStart,
   onLogin,
   onError,
 }: {
   clientId: string;
-  onLogin: (user: AuthUser, preferences: BudgetPreferences) => void;
+  onStart: () => void;
+  onLogin: (user: AuthUser, preferences: BudgetPreferences, hasPin: boolean) => void;
   onError: (message: string) => void;
 }) {
   const buttonRef = useRef<HTMLDivElement>(null);
@@ -1336,8 +1376,9 @@ function GoogleLoginButton({
             onError("Google did not return a credential");
             return;
           }
+          onStart();
           loginWithGoogle(response.credential)
-            .then(({ user }) => loadPreferences().then((preferences) => onLogin(user, preferences)))
+            .then(({ user, preferences, hasPin }) => onLogin(user, preferences, hasPin))
             .catch((err: unknown) => onError(err instanceof Error ? err.message : String(err)));
         },
       });
@@ -1355,7 +1396,7 @@ function GoogleLoginButton({
     return () => {
       script.remove();
     };
-  }, [clientId, onError, onLogin]);
+  }, [clientId, onError, onLogin, onStart]);
 
   if (!clientId) {
     return <div className="error-box">חסר GOOGLE_CLIENT_ID בקובץ .env</div>;

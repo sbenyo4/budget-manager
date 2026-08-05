@@ -1,3 +1,6 @@
+import type { Transaction } from "../types";
+import { isCardTransactionCharged, type CardDebitCutoffs } from "./flows";
+
 export interface PendingBillingSummary {
   billingDate?: string;
   total: number;
@@ -11,6 +14,24 @@ export interface PendingBillingMonthSummary {
   count: number;
   pendingInstallmentCount: number;
   billingDateCount: number;
+}
+
+/**
+ * Future card charges are account state, not reporting-period activity.
+ * Include every card transaction that has not reached a booked aggregate
+ * card debit yet, even when the purchase belongs to an earlier budget period.
+ */
+export function selectPendingCardTransactions(
+  transactions: Transaction[],
+  cutoffs: CardDebitCutoffs,
+  cardLast4 = ""
+): Transaction[] {
+  return transactions.filter(
+    (tx) =>
+      tx.source === "card" &&
+      (!cardLast4 || tx.cardLast4 === cardLast4) &&
+      !isCardTransactionCharged(tx, cutoffs)
+  );
 }
 
 /** Combines individual card billing dates into compact calendar-month totals. */
