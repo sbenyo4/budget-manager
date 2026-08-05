@@ -3315,6 +3315,9 @@ h1 {
   }
 
   .tabs {
+    align-items: center;
+    max-width: 100%;
+    min-width: 0;
     overflow-x: auto;
   }
 
@@ -3395,7 +3398,10 @@ h1 {
   }
 
   .tab {
-    min-width: 112px;
+    flex: 0 0 auto;
+    min-width: 0;
+    width: max-content;
+    padding-inline: 10px;
   }
 
   .alerts-summary {
