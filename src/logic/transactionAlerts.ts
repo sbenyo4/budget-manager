@@ -6,6 +6,7 @@ export type TransactionAlertKind =
   | "price_increase"
   | "monthly_spike"
   | "high_amount"
+  | "high_balance"
   | "unusual_amount"
   | "strange_merchant";
 
@@ -39,6 +40,36 @@ export function mergeAlertApprovals(
     );
   }
   return merged;
+}
+
+export function detectHighCheckingBalanceAlert(
+  checkingBalance: { balance: number; date: string } | null,
+  threshold: number,
+  approvals: Record<string, number> = {}
+): TransactionAlert | null {
+  if (!checkingBalance || !Number.isFinite(checkingBalance.balance)) return null;
+  const normalizedThreshold = Math.max(0, threshold);
+  if (checkingBalance.balance <= normalizedThreshold) return null;
+
+  const roundedThreshold = roundAmount(normalizedThreshold);
+  const roundedBalance = roundAmount(checkingBalance.balance);
+  const approvalKey = `checking-balance:high:${roundedThreshold}`;
+  if (isApprovedAtCurrentBaseline(approvals, approvalKey, roundedBalance)) return null;
+
+  return {
+    id: `checking-balance:${checkingBalance.date}:${roundedBalance}:${roundedThreshold}`,
+    approvalKey,
+    approvalValue: roundedBalance,
+    kind: "high_balance",
+    severity: "warning",
+    merchant: "חשבון העו״ש",
+    date: checkingBalance.date,
+    amount: roundedBalance,
+    previousAmount: roundedThreshold,
+    title: "יתרת עו״ש גבוהה",
+    description: `היתרה גבוהה מסף ההתראה שהוגדר (${roundedThreshold} ₪). כדאי לבדוק אם יש כסף שאינו נדרש לשימוש השוטף.`,
+    transactionIds: [],
+  };
 }
 
 interface DetectTransactionAlertsOptions {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  detectHighCheckingBalanceAlert,
   detectTransactionAlerts,
   mergeAlertApprovals,
   type TransactionAlert,
@@ -18,6 +19,32 @@ function expense(id: string, date: string, merchant: string, amount: number, ext
     ...extra,
   };
 }
+
+test("detects a checking balance above the configured threshold", () => {
+  assert.equal(
+    detectHighCheckingBalanceAlert({ balance: 15_000, date: "2026-08-05" }, 15_000),
+    null,
+  );
+
+  const alert = detectHighCheckingBalanceAlert(
+    { balance: 18_250, date: "2026-08-05" },
+    15_000,
+  );
+
+  assert.ok(alert);
+  assert.equal(alert.kind, "high_balance");
+  assert.equal(alert.amount, 18_250);
+  assert.equal(alert.previousAmount, 15_000);
+  assert.equal(alert.transactionIds.length, 0);
+  assert.equal(
+    detectHighCheckingBalanceAlert(
+      { balance: 18_250, date: "2026-08-05" },
+      15_000,
+      { [alert.approvalKey]: alert.approvalValue },
+    ),
+    null,
+  );
+});
 
 test("detects a recurring service price increase", () => {
   const alerts = detectTransactionAlerts(

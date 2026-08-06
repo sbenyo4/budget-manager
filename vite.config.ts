@@ -33,6 +33,7 @@ const PREFS_DEFAULT = {
   oneTimeExpenses: [],
   fixedExpenses: [],
   highAmountThreshold: 5000,
+  highCheckingBalanceThreshold: 15000,
   householdBirthDate: null as string | null,
   householdAge: null as number | null,
   householdSize: null as number | null,

@@ -68,6 +68,7 @@ export function normalizePreferences(body: Partial<BudgetPreferences>): BudgetPr
 export function normalizePreferencesPatch(body: Partial<BudgetPreferences>): Partial<BudgetPreferences> {
   const patch: Partial<BudgetPreferences> = {};
   const threshold = Number(body.highAmountThreshold);
+  const checkingBalanceThreshold = Number(body.highCheckingBalanceThreshold);
   const householdAge = Number(body.householdAge);
   const householdSize = Number(body.householdSize);
   const autoLogoutMinutes = Number(body.autoLogoutMinutes);
@@ -85,6 +86,13 @@ export function normalizePreferencesPatch(body: Partial<BudgetPreferences>): Par
   }
   if (Number.isFinite(threshold) && threshold >= 0 && threshold <= 1_000_000_000) {
     patch.highAmountThreshold = threshold;
+  }
+  if (
+    Number.isFinite(checkingBalanceThreshold) &&
+    checkingBalanceThreshold >= 0 &&
+    checkingBalanceThreshold <= 1_000_000_000
+  ) {
+    patch.highCheckingBalanceThreshold = checkingBalanceThreshold;
   }
   if (body.householdBirthDate === null) patch.householdBirthDate = null;
   else {

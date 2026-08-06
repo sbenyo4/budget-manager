@@ -14,6 +14,7 @@ export interface BudgetPreferences {
   fixedExpenses: string[];
   alertApprovals: Record<string, number>;
   highAmountThreshold: number;
+  highCheckingBalanceThreshold: number;
   householdBirthDate: string | null;
   householdAge: number | null;
   householdSize: number | null;
@@ -38,6 +39,7 @@ export const emptyPreferences: BudgetPreferences = {
   fixedExpenses: [],
   alertApprovals: {},
   highAmountThreshold: 5000,
+  highCheckingBalanceThreshold: 15000,
   householdBirthDate: null,
   householdAge: null,
   householdSize: null,
@@ -83,6 +85,12 @@ function normalizeClientPreferences(value: Partial<BudgetPreferences>): BudgetPr
             )
           )
         : emptyPreferences.alertApprovals,
+    highCheckingBalanceThreshold:
+      typeof value.highCheckingBalanceThreshold === "number" &&
+      Number.isFinite(value.highCheckingBalanceThreshold) &&
+      value.highCheckingBalanceThreshold >= 0
+        ? value.highCheckingBalanceThreshold
+        : emptyPreferences.highCheckingBalanceThreshold,
     autoLogoutMinutes:
       Number.isInteger(value.autoLogoutMinutes) &&
       Number(value.autoLogoutMinutes) >= 1 &&

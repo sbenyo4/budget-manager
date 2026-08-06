@@ -27,6 +27,7 @@ test("Google login bootstraps preferences and PIN status in one client request",
     assert.equal(result.preferences.theme, "dark");
     assert.equal(result.preferences.autoLogoutMinutes, 10);
     assert.equal(result.preferences.highAmountThreshold, 5000);
+    assert.equal(result.preferences.highCheckingBalanceThreshold, 15000);
   } finally {
     globalThis.fetch = originalFetch;
     setAuthToken("");

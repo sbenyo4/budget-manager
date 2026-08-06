@@ -3152,6 +3152,11 @@ h1 {
   color: #9b6500;
 }
 
+.alert-kind.high_balance {
+  background: var(--today-wash);
+  color: var(--must);
+}
+
 .alert-card h3 {
   font-size: 1.05rem;
   margin: 0 0 8px;

@@ -28,6 +28,7 @@ import { AIAnalysisView } from "./components/AIAnalysisView";
 import { AlertsView } from "./components/AlertsView";
 import { useAutoLogout } from "./hooks/useAutoLogout";
 import {
+  detectHighCheckingBalanceAlert,
   detectTransactionAlerts,
   mergeAlertApprovals,
   type TransactionAlert,
@@ -38,7 +39,12 @@ type PinGateMode = "checking" | "setup" | "locked" | "unlocked" | "unavailable";
 type AppView = "monthly" | "trends" | "alerts" | "ai";
 type SettingsPreferences = Pick<
   BudgetPreferences,
-  "highAmountThreshold" | "householdBirthDate" | "householdAge" | "householdSize" | "autoLogoutMinutes"
+  | "highAmountThreshold"
+  | "highCheckingBalanceThreshold"
+  | "householdBirthDate"
+  | "householdAge"
+  | "householdSize"
+  | "autoLogoutMinutes"
 >;
 
 function readInitialTheme(): ThemeMode {
@@ -120,6 +126,9 @@ function calculateAgeFromBirthDate(birthDate: string, now = new Date()): number 
 function changedPreferences(previous: BudgetPreferences, next: BudgetPreferences): Partial<BudgetPreferences> {
   const patch: Partial<BudgetPreferences> = {};
   if (previous.highAmountThreshold !== next.highAmountThreshold) patch.highAmountThreshold = next.highAmountThreshold;
+  if (previous.highCheckingBalanceThreshold !== next.highCheckingBalanceThreshold) {
+    patch.highCheckingBalanceThreshold = next.highCheckingBalanceThreshold;
+  }
   if (previous.householdBirthDate !== next.householdBirthDate) patch.householdBirthDate = next.householdBirthDate;
   if (previous.householdAge !== next.householdAge) patch.householdAge = next.householdAge;
   if (previous.householdSize !== next.householdSize) patch.householdSize = next.householdSize;
@@ -516,20 +525,37 @@ function BudgetApp() {
 
   const periods = useMemo(() => buildPeriods(learnedTransactions), [learnedTransactions]);
   const displayTransactions = useMemo(() => tagSalaries(learnedTransactions), [learnedTransactions]);
-  const activeAlerts = useMemo(
-    () =>
-      detectTransactionAlerts(displayTransactions, {
+  const activeAlerts = useMemo(() => {
+    const transactionAlerts = detectTransactionAlerts(displayTransactions, {
         highAmountThreshold: preferences.highAmountThreshold,
         fixedExpenses: preferences.fixedExpenses,
         approvals: preferences.alertApprovals,
-      }),
-    [
-      displayTransactions,
+      });
+    const balanceAlert = detectHighCheckingBalanceAlert(
+      bankBalance,
+      preferences.highCheckingBalanceThreshold,
       preferences.alertApprovals,
-      preferences.fixedExpenses,
-      preferences.highAmountThreshold,
-    ]
-  );
+    );
+
+    if (!balanceAlert) return transactionAlerts;
+    const firstNonCriticalIndex = transactionAlerts.findIndex(
+      (alert) => alert.severity !== "critical",
+    );
+    if (firstNonCriticalIndex === -1) return [...transactionAlerts, balanceAlert];
+    return [
+      ...transactionAlerts.slice(0, firstNonCriticalIndex),
+      balanceAlert,
+      ...transactionAlerts.slice(firstNonCriticalIndex),
+    ];
+  }, [
+    bankBalance?.balance,
+    bankBalance?.date,
+    displayTransactions,
+    preferences.alertApprovals,
+    preferences.fixedExpenses,
+    preferences.highAmountThreshold,
+    preferences.highCheckingBalanceThreshold,
+  ]);
   const persistAlertApprovals = useCallback(
     (alertApprovals: Record<string, number>): Promise<void> => {
       const previousPreferences = preferencesRef.current;
@@ -835,6 +861,9 @@ function ServiceSettingsModal({
 }) {
   const [draft, setDraft] = useState<ServiceSettings>(settings);
   const [highAmountThreshold, setHighAmountThreshold] = useState(String(preferences.highAmountThreshold));
+  const [highCheckingBalanceThreshold, setHighCheckingBalanceThreshold] = useState(
+    String(preferences.highCheckingBalanceThreshold),
+  );
   const [householdBirthDate, setHouseholdBirthDate] = useState(preferences.householdBirthDate ?? "");
   const [householdSize, setHouseholdSize] = useState(preferences.householdSize ? String(preferences.householdSize) : "");
   const [autoLogoutMinutes, setAutoLogoutMinutes] = useState(String(preferences.autoLogoutMinutes));
@@ -853,12 +882,14 @@ function ServiceSettingsModal({
 
   useEffect(() => {
     setHighAmountThreshold(String(preferences.highAmountThreshold));
+    setHighCheckingBalanceThreshold(String(preferences.highCheckingBalanceThreshold));
     setHouseholdBirthDate(preferences.householdBirthDate ?? "");
     setHouseholdSize(preferences.householdSize ? String(preferences.householdSize) : "");
     setAutoLogoutMinutes(String(preferences.autoLogoutMinutes));
   }, [
     preferences.autoLogoutMinutes,
     preferences.highAmountThreshold,
+    preferences.highCheckingBalanceThreshold,
     preferences.householdBirthDate,
     preferences.householdSize,
   ]);
@@ -944,12 +975,17 @@ function ServiceSettingsModal({
     setSaving(true);
     setMessage("");
     const threshold = Number(highAmountThreshold);
+    const checkingBalanceThreshold = Number(highCheckingBalanceThreshold);
     const size = Number(householdSize);
     const logoutMinutes = Number(autoLogoutMinutes);
     const birthDate = householdBirthDate || null;
     const age = birthDate ? calculateAgeFromBirthDate(birthDate) : preferences.householdAge;
     onSave(draft, {
       highAmountThreshold: Number.isFinite(threshold) && threshold >= 0 ? threshold : 5000,
+      highCheckingBalanceThreshold:
+        Number.isFinite(checkingBalanceThreshold) && checkingBalanceThreshold >= 0
+          ? checkingBalanceThreshold
+          : 15000,
       householdBirthDate: birthDate,
       householdAge: age,
       householdSize: Number.isFinite(size) && size > 0 ? size : null,
@@ -1095,6 +1131,17 @@ function ServiceSettingsModal({
                 step="100"
                 value={highAmountThreshold}
                 onChange={(event) => setHighAmountThreshold(event.target.value)}
+              />
+            </label>
+            <label>
+              התראה על יתרת עו״ש מעל
+              <input
+                dir="ltr"
+                type="number"
+                min="0"
+                step="500"
+                value={highCheckingBalanceThreshold}
+                onChange={(event) => setHighCheckingBalanceThreshold(event.target.value)}
               />
             </label>
             <label>

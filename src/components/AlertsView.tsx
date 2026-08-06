@@ -14,6 +14,7 @@ const KIND_LABELS: Record<TransactionAlertKind, string> = {
   price_increase: "שינוי מחיר",
   monthly_spike: "שירות קבוע",
   high_amount: "סכום גבוה",
+  high_balance: "יתרת עו״ש",
   unusual_amount: "חריגה מהרגיל",
   strange_merchant: "עסקה לא ברורה",
 };
@@ -23,11 +24,18 @@ function formatAlertDate(date: string): string {
   return `${day}.${month}.${year}`;
 }
 
+function alertMarker(alert: TransactionAlert): string {
+  if (alert.severity === "critical") return "!";
+  if (alert.kind === "price_increase") return "↗";
+  if (alert.kind === "high_balance") return "₪";
+  return "?";
+}
+
 export function AlertsView({
   alerts,
   onApprove,
   title = "אירועים שדורשים תשומת לב",
-  description = "אישור מלמד את המערכת שהעסקה או המחיר החדש תקינים.",
+  description = "אישור מלמד את המערכת שהעסקה, המחיר או היתרה תקינים.",
   showSummary = true,
 }: AlertsViewProps) {
   const [keptAlerts, setKeptAlerts] = useState<Set<string>>(new Set());
@@ -74,7 +82,7 @@ export function AlertsView({
         <div className="alerts-empty">
           <span className="alerts-empty-icon" aria-hidden>✓</span>
           <h2>{title}</h2>
-          <p>לא זוהו בתקופה עליות מחיר או עסקאות חריגות שדורשות בדיקה.</p>
+          <p>לא זוהו עליות מחיר, יתרות או עסקאות חריגות שדורשות בדיקה.</p>
         </div>
       </section>
     );
@@ -138,10 +146,11 @@ export function AlertsView({
           const kept = keptAlerts.has(alert.id);
           const approving = approvingAlerts.has(alert.id);
           const approvalFailed = approvalErrors.has(alert.id);
+          const isBalanceAlert = alert.kind === "high_balance";
           return (
             <article className={`alert-card ${alert.severity}`} key={alert.id}>
               <div className="alert-card-marker" aria-hidden>
-                {alert.severity === "critical" ? "!" : alert.kind === "price_increase" ? "↗" : "?"}
+                {alertMarker(alert)}
               </div>
               <div className="alert-card-body">
                 <div className="alert-card-topline">
@@ -173,9 +182,13 @@ export function AlertsView({
                 <p>{alert.description}</p>
                 {alert.previousAmount !== undefined && (
                   <div className="alert-comparison" aria-label="השוואת סכומים">
-                    <span>בסיס קודם: {formatILS(alert.previousAmount)}</span>
+                    <span>
+                      {isBalanceAlert ? "סף שהוגדר" : "בסיס קודם"}: {formatILS(alert.previousAmount)}
+                    </span>
                     <span aria-hidden>←</span>
-                    <strong>חיוב נוכחי: {formatILS(alert.amount)}</strong>
+                    <strong>
+                      {isBalanceAlert ? "יתרה נוכחית" : "חיוב נוכחי"}: {formatILS(alert.amount)}
+                    </strong>
                     {alert.increasePercent !== undefined && <em>+{alert.increasePercent}%</em>}
                   </div>
                 )}

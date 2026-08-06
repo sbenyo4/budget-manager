@@ -9,6 +9,7 @@ test("preference normalization rejects malformed nested values and impossible da
     oneTimeExpenses: ["valid", 42] as unknown as string[],
     fixedExpenses: ["fixed"],
     highAmountThreshold: Number.POSITIVE_INFINITY,
+    highCheckingBalanceThreshold: Number.POSITIVE_INFINITY,
     householdBirthDate: "2026-02-31",
     householdAge: 999,
     householdSize: 2.5,
@@ -22,7 +23,17 @@ test("preference normalization rejects malformed nested values and impossible da
   assert.equal(normalized.householdAge, null);
   assert.equal(normalized.householdSize, null);
   assert.equal(normalized.autoLogoutMinutes, 5);
+  assert.equal(normalized.highCheckingBalanceThreshold, 15_000);
   assert.equal(normalized.theme, "dark");
+});
+
+test("checking balance alert threshold defaults to 15000 and accepts a configured value", () => {
+  assert.equal(normalizePreferences({}).highCheckingBalanceThreshold, 15_000);
+  assert.equal(
+    normalizePreferences({ highCheckingBalanceThreshold: 22_500 })
+      .highCheckingBalanceThreshold,
+    22_500,
+  );
 });
 
 test("preference normalization accepts a bounded auto-logout duration", () => {
