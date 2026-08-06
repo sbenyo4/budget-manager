@@ -26,6 +26,15 @@ test("detects a checking balance above the configured threshold", () => {
     null,
   );
 
+  assert.equal(
+    detectHighCheckingBalanceAlert({ balance: 15_450, date: "2026-08-05" }, 15_000),
+    null,
+  );
+
+  assert.ok(
+    detectHighCheckingBalanceAlert({ balance: 15_450.01, date: "2026-08-05" }, 15_000),
+  );
+
   const alert = detectHighCheckingBalanceAlert(
     { balance: 18_250, date: "2026-08-05" },
     15_000,

@@ -837,6 +837,20 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     ].join(":");
   }
 
+  function pendingInvestmentDuplicateKey(raw: RawTransaction, source: "bank" | "card", date: string): string | undefined {
+    if (source !== "bank" || raw.status?.toUpperCase() !== "PENDING") return undefined;
+    const info = parseAdditionalInfo(raw);
+    const accountNo = typeof info?.accountNo === "string" ? info.accountNo : raw.accountNumber ?? "";
+    const description =
+      typeof info?.transactionDescription === "string"
+        ? info.transactionDescription
+        : raw.merchantName || raw.description?.description || "";
+    const normalizedDescription = description.replace(/[\s\-–—_'״”"]/g, "").toLowerCase();
+    if (!accountNo || !normalizedDescription.includes("ניעקניה")) return undefined;
+    const pendingEventDate = typeof info?.pendingEventDate === "string" ? info.pendingEventDate : "";
+    return ["pending-investment", raw.providerId ?? "", accountNo, date, pendingEventDate, normalizedDescription].join(":");
+  }
+
   function cardLast4(raw: RawTransaction, source: "bank" | "card"): string | undefined {
     if (source === "card") {
       const digits = raw.accountNumber?.replace(/\D/g, "") ?? "";
@@ -874,6 +888,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     return {
       id: raw.id ? `${source}:${raw.id}` : `${source}-tx-${index}`,
       duplicateKey: cardDebitDuplicateKey(raw, source, date, amount) ?? (raw.id ? `${source}:${raw.id}` : undefined),
+      pendingInvestmentDuplicateKey: pendingInvestmentDuplicateKey(raw, source, date),
       source,
       date,
       ...(billingDate ? { billingDate } : {}),
@@ -894,17 +909,36 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
   }
 
   type DevTransaction = ReturnType<typeof normalize> & { detailTransactions?: DevPublicTransaction[] };
-  type DevPublicTransaction = Omit<DevTransaction, "detailTransactions" | "duplicateKey">;
+  type DevPublicTransaction = Omit<DevTransaction, "detailTransactions" | "duplicateKey" | "pendingInvestmentDuplicateKey">;
 
   function dedupeTransactions(transactions: DevTransaction[]): DevPublicTransaction[] {
     const seen = new Set<string>();
     const unique: DevPublicTransaction[] = [];
+    const pendingInvestmentIndexes = new Map<string, number[]>();
     for (const tx of transactions) {
       if (tx.duplicateKey) {
         if (seen.has(tx.duplicateKey)) continue;
         seen.add(tx.duplicateKey);
       }
-      const { duplicateKey: _duplicateKey, ...publicTx } = tx;
+      const {
+        duplicateKey: _duplicateKey,
+        pendingInvestmentDuplicateKey: _pendingInvestmentDuplicateKey,
+        ...publicTx
+      } = tx;
+      if (tx.pendingInvestmentDuplicateKey) {
+        const indexes = pendingInvestmentIndexes.get(tx.pendingInvestmentDuplicateKey) ?? [];
+        const matchingIndex = indexes.find((index) => {
+          const existingAmount = unique[index].amount;
+          const delta = Math.abs(existingAmount - tx.amount);
+          return delta <= 10 && delta <= Math.min(existingAmount, tx.amount) * 0.001;
+        });
+        if (matchingIndex !== undefined) {
+          if (tx.amount > unique[matchingIndex].amount) unique[matchingIndex] = publicTx;
+          continue;
+        }
+        indexes.push(unique.length);
+        pendingInvestmentIndexes.set(tx.pendingInvestmentDuplicateKey, indexes);
+      }
       unique.push(publicTx);
     }
     return unique;
@@ -989,7 +1023,12 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
       if (tx.source !== "card" || !tx.billingDate) continue;
       const groups = cardGroupsByBillingDate.get(tx.billingDate) ?? [];
       const key = `${tx.cardProvider ?? ""}:${tx.cardLast4 ?? ""}`;
-      const { detailTransactions: _detailTransactions, ...publicTx } = tx;
+      const {
+        detailTransactions: _detailTransactions,
+        duplicateKey: _duplicateKey,
+        pendingInvestmentDuplicateKey: _pendingInvestmentDuplicateKey,
+        ...publicTx
+      } = tx;
       const existing = groups.find((group) => group.details[0] && `${group.details[0].cardProvider ?? ""}:${group.details[0].cardLast4 ?? ""}` === key);
       if (existing) {
         existing.totalCents += amountCents(tx.amount);

@@ -49,7 +49,8 @@ export function detectHighCheckingBalanceAlert(
 ): TransactionAlert | null {
   if (!checkingBalance || !Number.isFinite(checkingBalance.balance)) return null;
   const normalizedThreshold = Math.max(0, threshold);
-  if (checkingBalance.balance <= normalizedThreshold) return null;
+  const toleratedThreshold = normalizedThreshold * 1.03;
+  if (checkingBalance.balance <= toleratedThreshold) return null;
 
   const roundedThreshold = roundAmount(normalizedThreshold);
   const roundedBalance = roundAmount(checkingBalance.balance);
@@ -67,7 +68,7 @@ export function detectHighCheckingBalanceAlert(
     amount: roundedBalance,
     previousAmount: roundedThreshold,
     title: "יתרת עו״ש גבוהה",
-    description: `היתרה גבוהה מסף ההתראה שהוגדר (${roundedThreshold} ₪). כדאי לבדוק אם יש כסף שאינו נדרש לשימוש השוטף.`,
+    description: `היתרה גבוהה ביותר מ־3% מסף ההתראה שהוגדר (${roundedThreshold} ₪). כדאי לבדוק אם יש כסף שאינו נדרש לשימוש השוטף.`,
     transactionIds: [],
   };
 }

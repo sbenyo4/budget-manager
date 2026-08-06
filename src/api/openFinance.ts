@@ -37,6 +37,39 @@ export interface FetchResult {
   demo: boolean;
 }
 
+function pendingInvestmentKey(tx: Transaction): string | null {
+  if (tx.source !== "bank" || tx.status?.toUpperCase() !== "PENDING") return null;
+  const merchant = tx.merchant.replace(/[\s\-–—_'״”"]/g, "").toLowerCase();
+  if (!merchant.includes("ניעקניה")) return null;
+  return [tx.date, merchant, tx.categoryMain, tx.categorySub].join(":");
+}
+
+export function dedupePendingInvestmentTransactions(transactions: Transaction[]): Transaction[] {
+  const unique: Transaction[] = [];
+  const candidateIndexes = new Map<string, number[]>();
+  for (const tx of transactions) {
+    const key = pendingInvestmentKey(tx);
+    if (!key) {
+      unique.push(tx);
+      continue;
+    }
+    const indexes = candidateIndexes.get(key) ?? [];
+    const matchingIndex = indexes.find((index) => {
+      const existingAmount = unique[index].amount;
+      const delta = Math.abs(existingAmount - tx.amount);
+      return delta <= 10 && delta <= Math.min(existingAmount, tx.amount) * 0.001;
+    });
+    if (matchingIndex !== undefined) {
+      if (tx.amount > unique[matchingIndex].amount) unique[matchingIndex] = tx;
+      continue;
+    }
+    indexes.push(unique.length);
+    candidateIndexes.set(key, indexes);
+    unique.push(tx);
+  }
+  return unique;
+}
+
 /**
  * Fetch expense transactions for a date range (ISO dates, inclusive) via the
  * local /api proxy (see vite.config.ts — the open-finance.ai credentials live
@@ -78,5 +111,6 @@ export async function fetchTransactions(from: string, to: string): Promise<Fetch
     }
     throw new Error(message);
   }
-  return { transactions: (await res.json()) as Transaction[], demo: false };
+  const transactions = (await res.json()) as Transaction[];
+  return { transactions: dedupePendingInvestmentTransactions(transactions), demo: false };
 }
