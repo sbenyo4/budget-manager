@@ -1,5 +1,5 @@
 import type { Transaction } from "../types";
-import { isCardTransactionCharged, type CardDebitCutoffs } from "./flows";
+import { isCardDebit, isCardTransactionCharged, type CardDebitCutoffs } from "./flows";
 
 export interface PendingBillingSummary {
   billingDate?: string;
@@ -24,14 +24,46 @@ export interface PendingBillingMonthSummary {
 export function selectPendingCardTransactions(
   transactions: Transaction[],
   cutoffs: CardDebitCutoffs,
-  cardLast4 = ""
+  cardLast4 = "",
+  excludedTransactionIds: ReadonlySet<string> = new Set()
 ): Transaction[] {
   return transactions.filter(
     (tx) =>
       tx.source === "card" &&
       (!cardLast4 || tx.cardLast4 === cardLast4) &&
+      !excludedTransactionIds.has(tx.id) &&
       !isCardTransactionCharged(tx, cutoffs)
   );
+}
+
+/**
+ * Card purchases already represented by an aggregate bank debit that is in
+ * PENDING status. They are still unsettled, but no longer belong to the next
+ * card cycle because the debit is already on its way to the checking account.
+ */
+export function selectCardTransactionsInPendingDebits(
+  transactions: Transaction[],
+  fallbackDetailsByDebitId: ReadonlyMap<string, Transaction[]> = new Map(),
+  cardLast4 = ""
+): Transaction[] {
+  const cardTransactionsById = new Map(
+    transactions.filter((tx) => tx.source === "card").map((tx) => [tx.id, tx])
+  );
+  const selected = new Map<string, Transaction>();
+
+  for (const debit of transactions) {
+    if (!isCardDebit(debit) || debit.type === "income" || debit.status?.toUpperCase() !== "PENDING") continue;
+    const details = debit.detailTransactions?.length
+      ? debit.detailTransactions
+      : fallbackDetailsByDebitId.get(debit.id) ?? [];
+    for (const detail of details) {
+      const transaction = cardTransactionsById.get(detail.id) ?? detail;
+      if (cardLast4 && transaction.cardLast4 !== cardLast4) continue;
+      selected.set(transaction.id, transaction);
+    }
+  }
+
+  return [...selected.values()];
 }
 
 /** Combines individual card billing dates into compact calendar-month totals. */

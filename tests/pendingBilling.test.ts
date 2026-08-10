@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { cardDebitCutoffs } from "../src/logic/flows";
-import { selectPendingCardTransactions, summarizePendingBillingMonths } from "../src/logic/pendingBilling";
+import {
+  selectCardTransactionsInPendingDebits,
+  selectPendingCardTransactions,
+  summarizePendingBillingMonths,
+} from "../src/logic/pendingBilling";
 import type { Transaction } from "../src/types";
 
 function tx(overrides: Partial<Transaction>): Transaction {
@@ -47,6 +51,31 @@ test("future charges still respect an explicitly selected card", () => {
   const result = selectPendingCardTransactions(transactions, cardDebitCutoffs(transactions), "2222");
 
   assert.deepEqual(result.map(({ id }) => id), ["second-card"]);
+});
+
+test("transactions attached to a pending bank debit are clearing, not next-cycle charges", () => {
+  const cardPurchase = tx({ id: "card:purchase", billingDate: "2026-08-10", cardLast4: "1111" });
+  const pendingDebit = tx({
+    id: "bank:pending-debit",
+    source: "bank",
+    date: "2026-08-10",
+    status: "PENDING",
+    cardLast4: "1111",
+    categoryMain: "INCOMES_EXPENSES",
+    categorySub: "CREDIT_CARD_CHECKING",
+    detailTransactions: [cardPurchase],
+  });
+  const transactions = [pendingDebit, cardPurchase];
+  const clearing = selectCardTransactionsInPendingDebits(transactions);
+  const future = selectPendingCardTransactions(
+    transactions,
+    cardDebitCutoffs(transactions),
+    "",
+    new Set(clearing.map(({ id }) => id))
+  );
+
+  assert.deepEqual(clearing.map(({ id }) => id), ["card:purchase"]);
+  assert.deepEqual(future, []);
 });
 
 test("pending billing summaries combine charge dates by calendar month", () => {

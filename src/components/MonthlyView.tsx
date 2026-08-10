@@ -4,7 +4,11 @@ import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { cardDebitCutoffs, isCardDebit, isCardTransactionCharged, isConsumption } from "../logic/flows";
 import { fixedExpenseKey, fixedExpenseKeysFor } from "../logic/expenseScope";
-import { selectPendingCardTransactions, summarizePendingBillingMonths } from "../logic/pendingBilling";
+import {
+  selectCardTransactionsInPendingDebits,
+  selectPendingCardTransactions,
+  summarizePendingBillingMonths,
+} from "../logic/pendingBilling";
 import type { BudgetPreferences } from "../api/preferences";
 import { displaySubLabel, mainColor } from "../logic/categoryNames";
 import {
@@ -561,10 +565,16 @@ export function MonthlyView({
   const balanceAtPeriodEnd = bankBalance ? bankBalance.balance - bankNetAfterPeriod : null;
   const balanceAtPeriodStart = balanceAtPeriodEnd === null ? null : balanceAtPeriodEnd - accountNet;
 
-  // Upcoming bill: card activity not yet debited
+  // Separate a pending aggregate bank debit from the genuinely next card cycle.
+  // Both are unsettled, but the former is already represented in account state.
+  const clearingCard = useMemo(
+    () => selectCardTransactionsInPendingDebits(categorizedTransactions, fallbackDebitDetails, cardFilter),
+    [cardFilter, categorizedTransactions, fallbackDebitDetails]
+  );
+  const clearingCardIds = useMemo(() => new Set(clearingCard.map((tx) => tx.id)), [clearingCard]);
   const pendingCard = useMemo(
-    () => selectPendingCardTransactions(categorizedTransactions, debitCutoffs, cardFilter),
-    [cardFilter, categorizedTransactions, debitCutoffs]
+    () => selectPendingCardTransactions(categorizedTransactions, debitCutoffs, cardFilter, clearingCardIds),
+    [cardFilter, categorizedTransactions, clearingCardIds, debitCutoffs]
   );
   const pendingInstallmentDetails = useMemo(
     () => pendingCard.filter((tx) => hasPendingMonthlyInstallmentAmount(tx, installmentOverrides[tx.id])),
@@ -579,6 +589,14 @@ export function MonthlyView({
       }, 0);
     },
     [installmentOverrides, pendingCard]
+  );
+  const clearingTotal = useMemo(
+    () => clearingCard.reduce((total, tx) => {
+      if (hasPendingMonthlyInstallmentAmount(tx, installmentOverrides[tx.id])) return total;
+      const amount = installmentMonthlyAmount(tx, installmentOverrides[tx.id]) ?? tx.amount;
+      return total + (tx.type === "income" ? -amount : amount);
+    }, 0),
+    [clearingCard, installmentOverrides]
   );
   const inferredPendingBillingDates = useMemo(() => inferredBillingDates(pendingCard), [pendingCard]);
   const pendingGroups = useMemo(() => {
@@ -1065,7 +1083,7 @@ export function MonthlyView({
           aria-expanded={pendingDetailsOpen}
         >
           <span className="stat-label">
-            {selectedPendingMonthIsCurrent ? "חיובים עתידיים החודש ⏳" : "חיובים עתידיים בחודש הבא ⏳"}
+            {selectedPendingMonthIsCurrent ? "חיובים במחזור הנוכחי ⏳" : "חיובים במחזור הבא ⏳"}
           </span>
           <span className="stat-value">{formatILSWhole(selectedPendingChargeTotal)}</span>
           <span className="stat-hint">
@@ -1078,7 +1096,7 @@ export function MonthlyView({
           {pendingCard.length > 0 && pendingTotalDiffersFromSelected && (
             <span className="stat-hint pending-next-charge">
               <span>
-                סה"כ כל החיובים העתידיים: {formatILS(pendingTotal)} · {pendingCard.length} עסקאות
+                סה"כ כל החיובים העתידיים: {formatILS(pendingTotal)} ({pendingCard.length})
               </span>
             </span>
           )}
@@ -1087,20 +1105,32 @@ export function MonthlyView({
               {pendingInstallmentDetails.length} עסקאות תשלומים ממתינות לפירוט חודשי
             </span>
           )}
+          {clearingCard.length > 0 && (
+            <span className="stat-hint pending-next-charge">
+              כבר בדרך לחשבון: {formatILS(clearingTotal)} ({clearingCard.length})
+            </span>
+          )}
           <span className="stat-action-icon" aria-hidden>{pendingDetailsOpen ? "▴" : "▾"}</span>
         </button>
       </div>
 
       {pendingDetailsOpen && (
-        <section className="pending-card-detail" aria-label="פירוט אשראי שטרם חויב">
+        <section className="pending-card-detail" aria-label="פירוט חיובי אשראי פתוחים">
           <div className="pending-card-detail-header">
-            <h3>פירוט אשראי שטרם חויב</h3>
+            <h3>חיובים במחזור הבא</h3>
             <span>
               {pendingCard.length > 0
                 ? `${pendingCard.length} עסקאות · חיובים ידועים ${formatILS(pendingTotal)}${pendingInstallmentDetails.length > 0 ? ` · ${pendingInstallmentDetails.length} ממתינות לפירוט תשלומים` : ""}`
                 : "אין עסקאות להצגה"}
             </span>
           </div>
+          {clearingCard.length > 0 && (
+            <div className="pending-clearing-summary" role="status">
+              <span>בדרך לחשבון · חיוב בנקאי טרם סופי</span>
+              <strong>{formatILS(clearingTotal)}</strong>
+              <small>{clearingCard.length} עסקאות שכבר משויכות לשורת חיוב ממתינה ואינן נספרות במחזור הבא</small>
+            </div>
+          )}
           {pendingMonthlySummaries.length > 0 && (
             <div className="pending-month-summary" aria-label="סיכום חיובים לפי חודש">
               {pendingMonthlySummaries.map((summary) => (

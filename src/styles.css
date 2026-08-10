@@ -683,6 +683,27 @@ h1 {
   font-variant-numeric: tabular-nums;
 }
 
+.pending-clearing-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--gridline);
+  border-inline-start: 4px solid var(--large-line);
+  border-radius: 9px;
+  background: var(--control-wash);
+}
+
+.pending-clearing-summary > strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.pending-clearing-summary > small {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+}
+
 .pending-card-groups {
   display: grid;
   gap: 10px;
