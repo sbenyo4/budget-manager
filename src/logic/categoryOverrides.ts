@@ -347,16 +347,24 @@ export function applyCategoryOverrides(transactions: Transaction[], overrides: S
   const savedOverrides = savedOverridesFor(overrides);
   const savedCategoryCache = new Map<string, string | undefined>();
   const defaultCategoryCache = new Map<string, string | undefined>();
-  const learned = transactions.flatMap((tx) => transactionAndDetails(tx)).flatMap((tx) => {
+  const learnedByMerchant = new Map<string, { merchant: string; category: string; recurring: boolean }>();
+  for (const tx of transactions.flatMap((transaction) => transactionAndDetails(transaction))) {
     const merchant = merchantKey(tx);
     const category =
       savedCategoryWithCache(merchant, overrides, savedOverrides, savedCategoryCache) ||
       defaultCategoryWithCache(merchant) ||
       normalizeCategoryKey(tx.categoryMain);
-    return isUsefulLearnedCategory(category)
-      ? [{ merchant: merchantFingerprint(merchant), category, recurring: Boolean(tx.recurring) || isKnownRecurringMerchant(merchant) }]
-      : [];
-  });
+    if (!isUsefulLearnedCategory(category)) continue;
+    const normalizedMerchant = merchantFingerprint(merchant);
+    if (!learnedByMerchant.has(normalizedMerchant)) {
+      learnedByMerchant.set(normalizedMerchant, {
+        merchant: normalizedMerchant,
+        category,
+        recurring: Boolean(tx.recurring) || isKnownRecurringMerchant(merchant),
+      });
+    }
+  }
+  const learned = [...learnedByMerchant.values()];
   const learnedCache = new Map<string, { category?: string; recurring?: boolean }>();
 
   function savedCategoryWithCache(
@@ -376,7 +384,10 @@ export function applyCategoryOverrides(transactions: Transaction[], overrides: S
     const normalized = merchantFingerprint(merchant);
     const cached = learnedCache.get(normalized);
     if (cached) return cached;
-    const result = learnedCategoryForMerchant(merchant, learned);
+    const exact = learnedByMerchant.get(normalized);
+    const result = exact
+      ? { category: exact.category, recurring: exact.recurring }
+      : learnedCategoryForMerchant(merchant, learned);
     learnedCache.set(normalized, result);
     return result;
   }

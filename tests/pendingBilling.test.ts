@@ -53,6 +53,37 @@ test("future charges still respect an explicitly selected card", () => {
   assert.deepEqual(result.map(({ id }) => id), ["second-card"]);
 });
 
+test("future charges collapse the booked and pending Brand provider aliases", () => {
+  const transactions = [
+    tx({
+      id: "brand-old-provider-copy",
+      date: "2026-08-09",
+      billingDate: "2026-08-16",
+      cardLast4: "9699",
+      merchant: 'בראנד אספקה טכנית בע"מ-צמ',
+      amount: 59,
+      categoryMain: "SHOPPING",
+      categorySub: "SHOPPING_OTHER",
+    }),
+    tx({
+      id: "brand-clean",
+      date: "2026-08-09",
+      billingDate: "2026-08-16",
+      cardLast4: "9699",
+      merchant: 'בראנד אספקה טכנית בע"מ',
+      amount: 59,
+      categoryMain: "SHOPPING",
+      categorySub: "SHOPPING_OTHER",
+    }),
+  ];
+
+  const result = selectPendingCardTransactions(transactions, cardDebitCutoffs(transactions), "9699");
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, "brand-clean");
+  assert.equal(result.reduce((total, transaction) => total + transaction.amount, 0), 59);
+});
+
 test("transactions attached to a pending bank debit are clearing, not next-cycle charges", () => {
   const cardPurchase = tx({ id: "card:purchase", billingDate: "2026-08-10", cardLast4: "1111" });
   const pendingDebit = tx({

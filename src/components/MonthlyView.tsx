@@ -61,6 +61,7 @@ const sum = (txs: Transaction[]) => txs.reduce((s, t) => s + t.amount, 0);
 const amountCents = (value: number) => Math.round(value * 100);
 const MIN_SEARCH_CHARS = 2;
 const MAX_INFERRED_BILLING_DAYS = 45;
+const PENDING_IDENTITY_VERSION = 1;
 type ExpenseScope = "all" | "fixed" | "variable";
 type CategoryViewMode = "transactions" | "summary" | "statistics";
 
@@ -574,7 +575,7 @@ export function MonthlyView({
   const clearingCardIds = useMemo(() => new Set(clearingCard.map((tx) => tx.id)), [clearingCard]);
   const pendingCard = useMemo(
     () => selectPendingCardTransactions(categorizedTransactions, debitCutoffs, cardFilter, clearingCardIds),
-    [cardFilter, categorizedTransactions, clearingCardIds, debitCutoffs]
+    [cardFilter, categorizedTransactions, clearingCardIds, debitCutoffs, PENDING_IDENTITY_VERSION]
   );
   const pendingInstallmentDetails = useMemo(
     () => pendingCard.filter((tx) => hasPendingMonthlyInstallmentAmount(tx, installmentOverrides[tx.id])),
@@ -1809,7 +1810,9 @@ function MonthlyCategoryPicker({
 }) {
   const [draft, setDraft] = useState("");
   const [isCreating, setIsCreating] = useState(false);
-  const isKnown = !value || options.some((option) => option.value === value);
+  const [optimisticValue, setOptimisticValue] = useState(value);
+  useEffect(() => setOptimisticValue(value), [value]);
+  const isKnown = !optimisticValue || options.some((option) => option.value === optimisticValue);
 
   return (
     <span
@@ -1819,7 +1822,7 @@ function MonthlyCategoryPicker({
       onKeyDown={(event) => event.stopPropagation()}
     >
       <select
-        value={isCreating || !isKnown ? "__new" : value}
+        value={isCreating || !isKnown ? "__new" : optimisticValue}
         onChange={(event) => {
           const next = event.target.value;
           if (next === "__new") {
@@ -1827,6 +1830,7 @@ function MonthlyCategoryPicker({
             setIsCreating(true);
             return;
           }
+          setOptimisticValue(next);
           setIsCreating(false);
           onChange(next);
         }}
@@ -1845,12 +1849,14 @@ function MonthlyCategoryPicker({
           onChange={(event) => setDraft(event.target.value)}
           onBlur={() => {
             if (draft.trim()) {
+              setOptimisticValue(draft.trim());
               onChange(draft);
               setIsCreating(false);
             }
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && draft.trim()) {
+              setOptimisticValue(draft.trim());
               onChange(draft);
               setIsCreating(false);
             }

@@ -246,20 +246,95 @@ function isMonthlyInstallmentAmountPending(raw: RawTransaction): boolean {
   return raw.details?.trim() === "תשלומים" && !raw.installments?.total;
 }
 
-function dedupeTransactions(transactions: NormalizedTransaction[]): PublicTransaction[] {
+function publicTransaction(tx: NormalizedTransaction): PublicTransaction {
+  const {
+    duplicateKey: _duplicateKey,
+    pendingInvestmentDuplicateKey: _pendingInvestmentDuplicateKey,
+    ...publicTx
+  } = tx;
+  return publicTx;
+}
+
+function hasMerchantProviderSuffix(value: string): boolean {
+  return /\s*[-‐‑‒–—―−־]\s*צמ\s*$/u.test(
+    value.normalize("NFKC").replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/giu, "")
+  );
+}
+
+function normalizedMerchant(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/giu, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\s*[-‐‑‒–—―−־]\s*צמ\s*$/u, "")
+    .trim()
+    .toLocaleLowerCase("he");
+}
+
+function cardPurchaseFingerprint(tx: NormalizedTransaction): string | null {
+  if (tx.source !== "card") return null;
+  return [
+    tx.cardLast4 ?? "",
+    tx.date,
+    amountCents(tx.amount),
+    normalizedMerchant(tx.merchant),
+  ].join(":");
+}
+
+function isPendingStatus(status?: string): boolean {
+  return status?.toUpperCase() === "PENDING";
+}
+
+function cardRecordScore(tx: NormalizedTransaction): number {
+  return (
+    (isPendingStatus(tx.status) ? 0 : tx.status ? 8 : 1) +
+    (tx.billingDate ? 4 : 0) +
+    (tx.cardLast4 ? 2 : 0) +
+    (tx.cardProvider ? 1 : 0) +
+    (tx.installment ? 1 : 0) +
+    (hasMerchantProviderSuffix(tx.merchant) ? 0 : 1)
+  );
+}
+
+function richerCardRecord(a: NormalizedTransaction, b: NormalizedTransaction): NormalizedTransaction {
+  const preferred = cardRecordScore(b) > cardRecordScore(a) ? b : a;
+  const fallback = preferred === a ? b : a;
+  return {
+    ...preferred,
+    ...(preferred.billingDate || !fallback.billingDate ? {} : { billingDate: fallback.billingDate }),
+    ...(preferred.cardLast4 || !fallback.cardLast4 ? {} : { cardLast4: fallback.cardLast4 }),
+    ...(preferred.cardProvider || !fallback.cardProvider ? {} : { cardProvider: fallback.cardProvider }),
+    ...(preferred.originalAmount !== undefined || fallback.originalAmount === undefined
+      ? {}
+      : { originalAmount: fallback.originalAmount }),
+    ...(preferred.installment || !fallback.installment ? {} : { installment: fallback.installment }),
+  };
+}
+
+function dedupeTransactions(transactions: NormalizedTransaction[]): NormalizedTransaction[] {
   const seen = new Set<string>();
-  const unique: PublicTransaction[] = [];
+  const unique: NormalizedTransaction[] = [];
+  const cardPurchaseIndexes = new Map<string, number[]>();
   const pendingInvestmentIndexes = new Map<string, number[]>();
   for (const tx of transactions) {
     if (tx.duplicateKey) {
       if (seen.has(tx.duplicateKey)) continue;
       seen.add(tx.duplicateKey);
     }
-    const {
-      duplicateKey: _duplicateKey,
-      pendingInvestmentDuplicateKey: _pendingInvestmentDuplicateKey,
-      ...publicTx
-    } = tx;
+
+    const cardFingerprint = cardPurchaseFingerprint(tx);
+    if (cardFingerprint) {
+      const indexes = cardPurchaseIndexes.get(cardFingerprint) ?? [];
+      const matchingIndex = indexes[0];
+      if (matchingIndex !== undefined) {
+        unique[matchingIndex] = richerCardRecord(unique[matchingIndex], tx);
+        continue;
+      }
+      indexes.push(unique.length);
+      cardPurchaseIndexes.set(cardFingerprint, indexes);
+    }
+
     if (tx.pendingInvestmentDuplicateKey) {
       const indexes = pendingInvestmentIndexes.get(tx.pendingInvestmentDuplicateKey) ?? [];
       const matchingIndex = indexes.find((index) => {
@@ -271,13 +346,13 @@ function dedupeTransactions(transactions: NormalizedTransaction[]): PublicTransa
         // Hapoalim can expose both the securities principal and the final
         // debit (principal + fee) as pending. The expected balance reflects
         // only the larger, final debit.
-        if (tx.amount > unique[matchingIndex].amount) unique[matchingIndex] = publicTx;
+        if (tx.amount > unique[matchingIndex].amount) unique[matchingIndex] = tx;
         continue;
       }
       indexes.push(unique.length);
       pendingInvestmentIndexes.set(tx.pendingInvestmentDuplicateKey, indexes);
     }
-    unique.push(publicTx);
+    unique.push(tx);
   }
   return unique;
 }
@@ -404,11 +479,7 @@ function attachCardDebitDetails(transactions: NormalizedTransaction[]): Normaliz
 
   for (const tx of transactions) {
     if (tx.source !== "card" || !tx.billingDate) continue;
-    const {
-      duplicateKey: _duplicateKey,
-      pendingInvestmentDuplicateKey: _pendingInvestmentDuplicateKey,
-      ...publicTx
-    } = tx;
+    const publicTx = publicTransaction(tx);
     const groups = cardGroupsByBillingDate.get(tx.billingDate) ?? [];
     const key = `${tx.cardProvider ?? ""}:${tx.cardLast4 ?? ""}`;
     const existing = groups.find((group) => group.details[0] && `${group.details[0].cardProvider ?? ""}:${group.details[0].cardLast4 ?? ""}` === key);
@@ -451,10 +522,11 @@ export function normalizeOpenFinanceTransactions(
   bank: RawTransaction[],
   card: RawTransaction[] = []
 ): PublicTransaction[] {
-  return dedupeTransactions(attachCardDebitDetails([
+  const normalized = dedupeTransactions([
     ...bank.map((raw, i) => normalizeOpenFinanceTransaction(raw, i, "bank")),
     ...card.map((raw, i) => normalizeOpenFinanceTransaction(raw, i, "card")),
-  ]));
+  ]);
+  return attachCardDebitDetails(normalized).map(publicTransaction);
 }
 
 function pickBalance(balances: RawBalance[] = []): RawBalance | undefined {

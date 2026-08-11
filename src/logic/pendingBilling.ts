@@ -16,6 +16,49 @@ export interface PendingBillingMonthSummary {
   billingDateCount: number;
 }
 
+function normalizedPendingMerchant(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/giu, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\s*[-‐‑‒–—―−־]\s*צמ\s*$/u, "")
+    .trim()
+    .toLocaleLowerCase("he");
+}
+
+function hasPendingMerchantProviderSuffix(value: string): boolean {
+  return /\s*[-‐‑‒–—―−־]\s*צמ\s*$/u.test(
+    value.normalize("NFKC").replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/giu, "")
+  );
+}
+
+function dedupePendingDisplayTransactions(transactions: Transaction[]): Transaction[] {
+  const unique: Transaction[] = [];
+  const indexes = new Map<string, number>();
+  for (const tx of transactions) {
+    const key = [
+      tx.cardLast4 ?? "",
+      tx.date,
+      Math.round(tx.amount * 100),
+      normalizedPendingMerchant(tx.merchant),
+    ].join(":");
+    const existingIndex = indexes.get(key);
+    if (existingIndex !== undefined) {
+      if (
+        hasPendingMerchantProviderSuffix(unique[existingIndex].merchant) &&
+        !hasPendingMerchantProviderSuffix(tx.merchant)
+      ) {
+        unique[existingIndex] = tx;
+      }
+      continue;
+    }
+    indexes.set(key, unique.length);
+    unique.push(tx);
+  }
+  return unique;
+}
+
 /**
  * Future card charges are account state, not reporting-period activity.
  * Include every card transaction that has not reached a booked aggregate
@@ -27,12 +70,14 @@ export function selectPendingCardTransactions(
   cardLast4 = "",
   excludedTransactionIds: ReadonlySet<string> = new Set()
 ): Transaction[] {
-  return transactions.filter(
-    (tx) =>
-      tx.source === "card" &&
-      (!cardLast4 || tx.cardLast4 === cardLast4) &&
-      !excludedTransactionIds.has(tx.id) &&
-      !isCardTransactionCharged(tx, cutoffs)
+  return dedupePendingDisplayTransactions(
+    transactions.filter(
+      (tx) =>
+        tx.source === "card" &&
+        (!cardLast4 || tx.cardLast4 === cardLast4) &&
+        !excludedTransactionIds.has(tx.id) &&
+        !isCardTransactionCharged(tx, cutoffs)
+    )
   );
 }
 

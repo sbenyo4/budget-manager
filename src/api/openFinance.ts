@@ -70,6 +70,56 @@ export function dedupePendingInvestmentTransactions(transactions: Transaction[])
   return unique;
 }
 
+function hasCardMerchantProviderSuffix(value: string): boolean {
+  return /\s*[-‐‑‒–—―−־]\s*צמ\s*$/u.test(
+    value.normalize("NFKC").replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/giu, "")
+  );
+}
+
+function normalizedCardMerchant(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/giu, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\s*[-‐‑‒–—―−־]\s*צמ\s*$/u, "")
+    .trim()
+    .toLocaleLowerCase("he");
+}
+
+function cardTransactionScore(tx: Transaction): number {
+  return (
+    (tx.status?.toUpperCase() === "PENDING" ? 0 : tx.status ? 4 : 1) +
+    (tx.billingDate ? 2 : 0) +
+    (hasCardMerchantProviderSuffix(tx.merchant) ? 0 : 1)
+  );
+}
+
+export function dedupeCardProviderAliasTransactions(transactions: Transaction[]): Transaction[] {
+  const unique: Transaction[] = [];
+  const cardIndexes = new Map<string, number>();
+  for (const tx of transactions) {
+    if (tx.source !== "card") {
+      unique.push(tx);
+      continue;
+    }
+    const key = [
+      tx.cardLast4 ?? "",
+      tx.date,
+      Math.round(tx.amount * 100),
+      normalizedCardMerchant(tx.merchant),
+    ].join(":");
+    const existingIndex = cardIndexes.get(key);
+    if (existingIndex !== undefined) {
+      if (cardTransactionScore(tx) > cardTransactionScore(unique[existingIndex])) unique[existingIndex] = tx;
+      continue;
+    }
+    cardIndexes.set(key, unique.length);
+    unique.push(tx);
+  }
+  return unique;
+}
+
 /**
  * Fetch expense transactions for a date range (ISO dates, inclusive) via the
  * local /api proxy (see vite.config.ts — the open-finance.ai credentials live
@@ -112,5 +162,8 @@ export async function fetchTransactions(from: string, to: string): Promise<Fetch
     throw new Error(message);
   }
   const transactions = (await res.json()) as Transaction[];
-  return { transactions: dedupePendingInvestmentTransactions(transactions), demo: false };
+  return {
+    transactions: dedupePendingInvestmentTransactions(dedupeCardProviderAliasTransactions(transactions)),
+    demo: false,
+  };
 }
