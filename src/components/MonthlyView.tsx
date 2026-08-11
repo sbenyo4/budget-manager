@@ -46,6 +46,10 @@ interface Props {
   onPreferencesChange: (preferences: BudgetPreferences) => void;
 }
 
+export function transactionForDisplayedDebitDetails(tx: Transaction, debitDetails: Transaction[]): Transaction {
+  return isCardDebit(tx) && debitDetails.length === 1 ? debitDetails[0] : tx;
+}
+
 function sliceByMain(txs: Transaction[], categoryFor: (tx: Transaction) => string = (tx) => tx.categoryMain): DonutSlice[] {
   const totals = new Map<string, number>();
   for (const tx of txs) {
@@ -1372,15 +1376,15 @@ export function MonthlyView({
                   }
                   return true;
                 });
-                const singleDebitDetail = isCardDebit(tx) && debitDetails.length === 1 ? debitDetails[0] : null;
-                const displayTx = singleDebitDetail ?? tx;
+                const displayTx = transactionForDisplayedDebitDetails(tx, debitDetails);
+                const singleDebitDetail = displayTx === tx ? null : displayTx;
                 const displayCategoryMain = effectiveCategoryMain(displayTx);
                 const categoryMainLabel = categoryLabel(displayCategoryMain);
                 const categorySubLabel = displaySubLabel(displayTx.categorySub);
                 const isCategoryExcluded = excludedCategories.has(displayCategoryMain);
                 const canToggleTransaction = !isCardDebit(tx) || Boolean(singleDebitDetail);
                 const isTransactionExcluded = canToggleTransaction && excludedTransactionIds.has(displayTx.id);
-                const displayDate = new Date(`${tx.date}T00:00:00`).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+                const displayDate = new Date(`${displayTx.date}T00:00:00`).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
                 const canExpandDebit = isCardDebit(tx) && debitDetails.length > 1;
                 const isExpandedBySearch = canExpandDebit && detailMatchesSearch(debitDetails, normalizedSearchQuery, effectiveCategoryMain);
                 const isExpanded = expandedDebitId === tx.id || isExpandedBySearch;
@@ -1393,7 +1397,7 @@ export function MonthlyView({
                 return (
                 <Fragment key={tx.id}>
                 <tr
-                  className={`${isCardDebit(tx) ? "aggregate-row" : ""} ${canExpandDebit ? "expandable-row" : ""} ${isTransactionExcluded ? "excluded-transaction" : ""} ${transactionHighlightClass(tx, highAmountThreshold)}`.trim()}
+                  className={`${isCardDebit(tx) ? "aggregate-row" : ""} ${canExpandDebit ? "expandable-row" : ""} ${isTransactionExcluded ? "excluded-transaction" : ""} ${transactionHighlightClass(displayTx, highAmountThreshold)}`.trim()}
                   onClick={
                     canExpandDebit
                       ? (event) => {
@@ -1529,8 +1533,8 @@ export function MonthlyView({
                   <td className="source-cell">
                     {sourceLabel && <span className={`source-chip ${sourceClass}`}>{highlightSearchText(sourceLabel, visibleSearchQuery)}</span>}
                   </td>
-                  <td className={`num ${tx.type === "income" ? "net-positive" : ""}`}>
-                    {tx.type === "income" ? "+" : "−"}{highlightSearchText(formatILS(tx.amount), visibleSearchQuery)}
+                  <td className={`num ${displayTx.type === "income" ? "net-positive" : ""}`}>
+                    {displayTx.type === "income" ? "+" : "−"}{highlightSearchText(formatILS(displayTx.amount), visibleSearchQuery)}
                   </td>
                 </tr>
                 {canExpandDebit && isExpanded && (
