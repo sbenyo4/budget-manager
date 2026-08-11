@@ -89,6 +89,38 @@ test("category overrides are applied recursively to card debit details", () => {
   assert.equal(result.detailTransactions?.[0]?.categorySub, "USER_DEFINED");
 });
 
+test("unchanged categorized transactions retain their array and object references", () => {
+  const detail = transaction("detail-stable", "Stable Detail", "SHOPPING", "USER_DEFINED");
+  const aggregate: Transaction = {
+    ...transaction("aggregate-stable", "Stable Aggregate", "SHOPPING", "USER_DEFINED"),
+    detailTransactions: [detail],
+  };
+  const input = [aggregate];
+
+  const result = applyCategoryOverrides(input, {});
+
+  assert.equal(result, input);
+  assert.equal(result[0], aggregate);
+  assert.equal(result[0].detailTransactions, aggregate.detailTransactions);
+  assert.equal(result[0].detailTransactions?.[0], detail);
+});
+
+test("changing one override only replaces transactions in the matching alias group", () => {
+  const matching = transaction("matching", "Acme Store", "SHOPPING", "USER_DEFINED");
+  const matchingAlias = transaction("matching-alias", "Acme Store Tel Aviv", "SHOPPING", "USER_DEFINED");
+  const unrelated = transaction("unrelated", "Different Merchant", "SHOPPING", "USER_DEFINED");
+  const input = [matching, matchingAlias, unrelated];
+
+  const result = applyCategoryOverrides(input, { "Acme Store": "TRANSPORT" });
+
+  assert.notEqual(result, input);
+  assert.notEqual(result[0], matching);
+  assert.notEqual(result[1], matchingAlias);
+  assert.equal(result[2], unrelated);
+  assert.equal(result[0].categoryMain, "TRANSPORT");
+  assert.equal(result[1].categoryMain, "TRANSPORT");
+});
+
 test("custom and canonical category labels normalize without changing stored semantics", () => {
   assert.equal(normalizeCategoryKey("SHOPPING"), "SHOPPING");
   assert.equal(customCategoryKey("קטגוריה אישית"), "CUSTOM:קטגוריה אישית");

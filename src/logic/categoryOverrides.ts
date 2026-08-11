@@ -220,10 +220,6 @@ function merchantFingerprint(merchant: string): string {
     .replace(/\s+/g, " ");
 }
 
-function compactMerchantFingerprint(merchant: string): string {
-  return merchantFingerprint(merchant).replace(/\s+/g, "");
-}
-
 const COMPILED_DEFAULT_CATEGORY_RULES = DEFAULT_CATEGORY_RULES.map((rule) => ({
   category: rule.category,
   patterns: rule.patterns.map((pattern) => {
@@ -252,12 +248,25 @@ interface MerchantMatchFeatures {
   brandSet: Set<string>;
 }
 
+const MERCHANT_FEATURE_CACHE_LIMIT = 50_000;
+const merchantFeatureCache = new Map<string, MerchantMatchFeatures>();
+const defaultCategoryCache = new Map<string, string | undefined>();
+const recurringMerchantCache = new Map<string, boolean>();
+
+function cacheMerchantValue<T>(cache: Map<string, T>, merchant: string, value: T): T {
+  if (cache.size >= MERCHANT_FEATURE_CACHE_LIMIT) cache.clear();
+  cache.set(merchant, value);
+  return value;
+}
+
 function merchantMatchFeatures(merchant: string): MerchantMatchFeatures {
   const normalized = merchantFingerprint(merchant);
+  const cached = merchantFeatureCache.get(normalized);
+  if (cached) return cached;
   const compact = normalized.replace(/\s+/g, "");
   const tokens = meaningfulMerchantTokens(normalized);
   const brands = COMPACT_BRAND_MATCH_TOKENS.filter((brand) => compact.includes(brand));
-  return {
+  const features = {
     normalized,
     compact,
     tokens,
@@ -265,6 +274,9 @@ function merchantMatchFeatures(merchant: string): MerchantMatchFeatures {
     brands,
     brandSet: new Set(brands),
   };
+  if (merchantFeatureCache.size >= MERCHANT_FEATURE_CACHE_LIMIT) merchantFeatureCache.clear();
+  merchantFeatureCache.set(normalized, features);
+  return features;
 }
 
 function canonicalCategoryKey(labelOrKey: string): string | undefined {
@@ -278,21 +290,24 @@ function canonicalCategoryKey(labelOrKey: string): string | undefined {
 }
 
 export function defaultCategoryForMerchant(merchant: string): string | undefined {
-  const normalized = merchantFingerprint(merchant);
-  const compact = compactMerchantFingerprint(merchant);
-  return COMPILED_DEFAULT_CATEGORY_RULES.find((rule) =>
+  const { normalized, compact } = merchantMatchFeatures(merchant);
+  if (defaultCategoryCache.has(normalized)) return defaultCategoryCache.get(normalized);
+  const category = COMPILED_DEFAULT_CATEGORY_RULES.find((rule) =>
     rule.patterns.some(
       (pattern) => normalized.includes(pattern.normalized) || compact.includes(pattern.compact)
     )
   )?.category;
+  return cacheMerchantValue(defaultCategoryCache, normalized, category);
 }
 
 function isKnownRecurringMerchant(merchant: string): boolean {
-  const normalized = merchantFingerprint(merchant);
-  const compact = compactMerchantFingerprint(merchant);
-  return COMPILED_RECURRING_MERCHANT_PATTERNS.some(
+  const { normalized, compact } = merchantMatchFeatures(merchant);
+  const cached = recurringMerchantCache.get(normalized);
+  if (cached !== undefined) return cached;
+  const recurring = COMPILED_RECURRING_MERCHANT_PATTERNS.some(
     (pattern) => normalized.includes(pattern.normalized) || compact.includes(pattern.compact)
   );
+  return cacheMerchantValue(recurringMerchantCache, normalized, recurring);
 }
 
 function isUsefulLearnedCategory(category: string): boolean {
@@ -324,16 +339,144 @@ function merchantSimilarityScore(a: MerchantMatchFeatures, b: MerchantMatchFeatu
 
 type MerchantMatcher<T> = (merchant: string) => T | undefined;
 
+interface PreparedMerchantCandidate<T> {
+  candidate: T;
+  features: MerchantMatchFeatures;
+  order: number;
+}
+
+interface CompactTrieNode<T> {
+  children: Map<string, CompactTrieNode<T>>;
+  entries?: PreparedMerchantCandidate<T>[];
+}
+
+function compactNgrams(compact: string): string[] {
+  if (compact.length < 5) return [];
+  const grams = new Set<string>();
+  for (let index = 0; index <= compact.length - 5; index += 1) {
+    grams.add(compact.slice(index, index + 5));
+  }
+  return [...grams];
+}
+
+function addCandidateToIndex<T>(
+  index: Map<string, PreparedMerchantCandidate<T>[]>,
+  key: string,
+  entry: PreparedMerchantCandidate<T>
+) {
+  const entries = index.get(key);
+  if (entries) entries.push(entry);
+  else index.set(key, [entry]);
+}
+
+function addCandidateToCompactTrie<T>(root: CompactTrieNode<T>, entry: PreparedMerchantCandidate<T>) {
+  if (entry.features.compact.length < 5) return;
+  let node = root;
+  for (const character of entry.features.compact) {
+    let child = node.children.get(character);
+    if (!child) {
+      child = { children: new Map() };
+      node.children.set(character, child);
+    }
+    node = child;
+  }
+  if (node.entries) node.entries.push(entry);
+  else node.entries = [entry];
+}
+
+function addContainedCompactCandidates<T>(
+  compact: string,
+  root: CompactTrieNode<T>,
+  matches: Set<PreparedMerchantCandidate<T>>
+) {
+  for (let start = 0; start <= compact.length - 5; start += 1) {
+    let node = root;
+    for (let cursor = start; cursor < compact.length; cursor += 1) {
+      const child = node.children.get(compact[cursor]);
+      if (!child) break;
+      node = child;
+      if (node.entries) {
+        for (const entry of node.entries) matches.add(entry);
+      }
+    }
+  }
+}
+
 function createMerchantMatcher<T extends { merchant: string }>(candidates: T[]): MerchantMatcher<T> {
   if (candidates.length === 0) return () => undefined;
-  const prepared = candidates.map((candidate) => ({
+  const prepared = candidates.map((candidate, order) => ({
     candidate,
     features: merchantMatchFeatures(candidate.merchant),
+    order,
   }));
+  const exact = new Map<string, PreparedMerchantCandidate<T>>();
+  const byBrand = new Map<string, PreparedMerchantCandidate<T>[]>();
+  const byToken = new Map<string, PreparedMerchantCandidate<T>[]>();
+  const byRepeatedToken = new Map<string, PreparedMerchantCandidate<T>[]>();
+  const byCompactNgram = new Map<string, PreparedMerchantCandidate<T>[]>();
+  const compactTrie: CompactTrieNode<T> = { children: new Map() };
+  const resultCache = new Map<string, T | undefined>();
+
+  for (const entry of prepared) {
+    if (!exact.has(entry.features.normalized)) exact.set(entry.features.normalized, entry);
+    for (const brand of entry.features.brands) addCandidateToIndex(byBrand, brand, entry);
+    const tokenCounts = new Map<string, number>();
+    for (const token of entry.features.tokens) tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
+    for (const [token, count] of tokenCounts) {
+      addCandidateToIndex(byToken, token, entry);
+      if (count >= 2) addCandidateToIndex(byRepeatedToken, token, entry);
+    }
+    addCandidateToCompactTrie(compactTrie, entry);
+    for (const gram of compactNgrams(entry.features.compact)) addCandidateToIndex(byCompactNgram, gram, entry);
+  }
+
   return (merchant: string) => {
     const features = merchantMatchFeatures(merchant);
-    let best: { candidate: T; score: number } | undefined;
-    for (const entry of prepared) {
+    if (resultCache.has(features.normalized)) return resultCache.get(features.normalized);
+    const exactEntry = exact.get(features.normalized);
+    if (exactEntry) {
+      resultCache.set(features.normalized, exactEntry.candidate);
+      return exactEntry.candidate;
+    }
+
+    const possibleMatches = new Set<PreparedMerchantCandidate<T>>();
+    for (const brand of features.brands) {
+      for (const entry of byBrand.get(brand) ?? []) possibleMatches.add(entry);
+    }
+    const queryTokens = [...new Set(features.tokens)];
+    for (const token of queryTokens) {
+      for (const entry of byRepeatedToken.get(token) ?? []) possibleMatches.add(entry);
+    }
+    for (let left = 0; left < queryTokens.length; left += 1) {
+      const leftEntries = byToken.get(queryTokens[left]) ?? [];
+      if (leftEntries.length === 0) continue;
+      for (let right = left + 1; right < queryTokens.length; right += 1) {
+        const rightEntries = byToken.get(queryTokens[right]) ?? [];
+        if (rightEntries.length === 0) continue;
+        const [smaller, otherToken] = leftEntries.length <= rightEntries.length
+          ? [leftEntries, queryTokens[right]]
+          : [rightEntries, queryTokens[left]];
+        for (const entry of smaller) {
+          if (entry.features.tokenSet.has(otherToken)) possibleMatches.add(entry);
+        }
+      }
+    }
+
+    if (features.compact.length >= 5) {
+      addContainedCompactCandidates(features.compact, compactTrie, possibleMatches);
+
+      let containingCandidates: PreparedMerchantCandidate<T>[] | undefined;
+      for (const gram of compactNgrams(features.compact)) {
+        const entries = byCompactNgram.get(gram) ?? [];
+        if (!containingCandidates || entries.length < containingCandidates.length) containingCandidates = entries;
+      }
+      for (const entry of containingCandidates ?? []) {
+        if (entry.features.compact.includes(features.compact)) possibleMatches.add(entry);
+      }
+    }
+
+    let best: { candidate: T; score: number; order: number } | undefined;
+    for (const entry of possibleMatches) {
       const candidate = entry.candidate;
       const score = merchantSimilarityScore(features, entry.features);
       if (score <= 0) continue;
@@ -343,12 +486,17 @@ function createMerchantMatcher<T extends { merchant: string }>(candidates: T[]):
         (score === best.score && candidate.merchant.length > best.candidate.merchant.length) ||
         (score === best.score &&
           candidate.merchant.length === best.candidate.merchant.length &&
-          candidate.merchant.localeCompare(best.candidate.merchant, "he") < 0)
+          candidate.merchant.localeCompare(best.candidate.merchant, "he") < 0) ||
+        (score === best.score &&
+          candidate.merchant === best.candidate.merchant &&
+          entry.order < best.order)
       ) {
-        best = { candidate, score };
+        best = { candidate, score, order: entry.order };
       }
     }
-    return best?.candidate;
+    const result = best?.candidate;
+    resultCache.set(features.normalized, result);
+    return result;
   };
 }
 
@@ -411,7 +559,7 @@ export function applyCategoryOverrides(transactions: Transaction[], overrides: S
     }
   }
   const learned = [...learnedByMerchant.values()];
-  const learnedMatcher = createMerchantMatcher(learned);
+  let learnedMatcher: MerchantMatcher<{ merchant: string; category: string; recurring: boolean }> | undefined;
   const learnedCache = new Map<string, { category?: string; recurring?: boolean }>();
 
   function savedCategoryWithCache(
@@ -434,7 +582,7 @@ export function applyCategoryOverrides(transactions: Transaction[], overrides: S
     const exact = learnedByMerchant.get(normalized);
     const result = exact
       ? { category: exact.category, recurring: exact.recurring }
-      : learnedCategoryForMerchant(merchant, learnedMatcher);
+      : learnedCategoryForMerchant(merchant, learnedMatcher ??= createMerchantMatcher(learned));
     learnedCache.set(normalized, result);
     return result;
   }
@@ -456,16 +604,22 @@ export function applyCategoryOverrides(transactions: Transaction[], overrides: S
       learnedMatch.category;
     const recurring = tx.recurring || isKnownRecurringMerchant(merchant) || learnedMatch.recurring;
     const detailTransactions = tx.detailTransactions?.map(applyToTransaction);
-    if (!target && !recurring && !detailTransactions) return tx;
+    const categoryChanged = Boolean(target) && (tx.categoryMain !== target || tx.categorySub !== "USER_DEFINED");
+    const recurringChanged = Boolean(recurring) && tx.recurring !== true;
+    const detailsChanged = Boolean(
+      detailTransactions && tx.detailTransactions?.some((detail, index) => detailTransactions[index] !== detail)
+    );
+    if (!categoryChanged && !recurringChanged && !detailsChanged) return tx;
     return {
       ...tx,
-      ...(target ? { categoryMain: target, categorySub: "USER_DEFINED" } : {}),
-      ...(recurring ? { recurring: true } : {}),
-      ...(detailTransactions ? { detailTransactions } : {}),
+      ...(categoryChanged ? { categoryMain: target, categorySub: "USER_DEFINED" } : {}),
+      ...(recurringChanged ? { recurring: true } : {}),
+      ...(detailsChanged ? { detailTransactions } : {}),
     };
   };
 
-  return transactions.map(applyToTransaction);
+  const result = transactions.map(applyToTransaction);
+  return result.some((tx, index) => tx !== transactions[index]) ? result : transactions;
 }
 
 export function categoryChoices(categories: string[], overrides: SectionOverrides) {

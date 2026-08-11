@@ -104,3 +104,24 @@ test("budget loading starts transactions and balance requests concurrently", asy
     globalThis.fetch = originalFetch;
   }
 });
+
+test("budget loading forwards cancellation to both requests", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const signals: AbortSignal[] = [];
+  globalThis.fetch = async (_input, init) => {
+    if (init?.signal) signals.push(init.signal);
+    return await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    });
+  };
+
+  try {
+    const pending = fetchBudgetData("2026-08-01", "2026-08-31", controller.signal);
+    controller.abort();
+    await assert.rejects(pending, { name: "AbortError" });
+    assert.deepEqual(signals, [controller.signal, controller.signal]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

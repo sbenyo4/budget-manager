@@ -399,6 +399,80 @@ export async function patchStoredPreferencesForSession(
   }
 }
 
+export interface CategoryOverridePatchResult {
+  merchant: string;
+  category: string | null;
+  revision: string;
+}
+
+async function patchCategoryOverrideForSessionQuery(
+  sessionTokenHash: string,
+  now: number,
+  merchant: string,
+  category: string | null
+): Promise<CategoryOverridePatchResult | null> {
+  const initialOverrides = category === null ? {} : { [merchant]: category };
+  const inserted = { ...PREFS_DEFAULT, sectionOverrides: initialOverrides };
+  const rows = category === null
+    ? (await sql()`
+        WITH authenticated AS (
+          SELECT user_id
+          FROM sessions
+          WHERE token_hash = ${sessionTokenHash} AND expires_at > ${now}
+          LIMIT 1
+        )
+        INSERT INTO preferences (user_id, data, updated_at)
+        SELECT user_id, ${JSON.stringify(inserted)}::jsonb, NOW()
+        FROM authenticated
+        ON CONFLICT (user_id) DO UPDATE SET
+          data = jsonb_set(
+            preferences.data,
+            '{sectionOverrides}',
+            COALESCE(preferences.data->'sectionOverrides', '{}'::jsonb) - ${merchant},
+            true
+          ),
+          updated_at = NOW()
+        RETURNING updated_at::text AS revision
+      `)
+    : (await sql()`
+        WITH authenticated AS (
+          SELECT user_id
+          FROM sessions
+          WHERE token_hash = ${sessionTokenHash} AND expires_at > ${now}
+          LIMIT 1
+        )
+        INSERT INTO preferences (user_id, data, updated_at)
+        SELECT user_id, ${JSON.stringify(inserted)}::jsonb, NOW()
+        FROM authenticated
+        ON CONFLICT (user_id) DO UPDATE SET
+          data = jsonb_set(
+            preferences.data,
+            '{sectionOverrides}',
+            COALESCE(preferences.data->'sectionOverrides', '{}'::jsonb) || ${JSON.stringify({ [merchant]: category })}::jsonb,
+            true
+          ),
+          updated_at = NOW()
+        RETURNING updated_at::text AS revision
+      `);
+  const revision = (rows as Array<{ revision: string }>)[0]?.revision;
+  return revision ? { merchant, category, revision } : null;
+}
+
+export async function patchCategoryOverrideForSession(
+  sessionTokenHash: string,
+  now: number,
+  merchant: string,
+  category: string | null
+): Promise<CategoryOverridePatchResult | null> {
+  try {
+    return await patchCategoryOverrideForSessionQuery(sessionTokenHash, now, merchant, category);
+  } catch (error) {
+    if (!isMissingTableError(error)) throw error;
+    await ensureSchema();
+    return patchCategoryOverrideForSessionQuery(sessionTokenHash, now, merchant, category);
+  }
+}
+
 export async function getServiceSettings(userId: string): Promise<ServiceSettings> {
   await ensureSchema();
   const rows = (await sql()`

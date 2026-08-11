@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
@@ -393,6 +393,15 @@ function cardDigitsText(tx: Transaction): string | null {
   return tx.cardLast4 ? tx.cardLast4 : null;
 }
 
+function sameCategoryChoices(
+  previous: Array<{ value: string; label: string }>,
+  next: Array<{ value: string; label: string }>
+): boolean {
+  return previous.length === next.length && previous.every(
+    (option, index) => option.value === next[index].value && option.label === next[index].label
+  );
+}
+
 function cardDigitsSummary(tx: Transaction, details: Transaction[]): string | null {
   if (tx.cardLast4) return cardDigitsText(tx);
   const last4s = [...new Set(details.map((detail) => detail.cardLast4).filter((last4): last4 is string => Boolean(last4)))];
@@ -746,10 +755,17 @@ export function MonthlyView({
     () => [...new Set([...scopedBreakdownExpenses, ...breakdownIncomes].map(effectiveCategoryMain))],
     [scopedBreakdownExpenses, breakdownIncomes, effectiveCategoryMain]
   );
-  const categoryEditorOptions = useMemo(
+  const nextCategoryEditorOptions = useMemo(
     () => categoryChoices(categoryOptions, sectionOverrides),
     [categoryOptions, sectionOverrides]
   );
+  const categoryEditorOptionsRef = useRef(nextCategoryEditorOptions);
+  if (!sameCategoryChoices(categoryEditorOptionsRef.current, nextCategoryEditorOptions)) {
+    categoryEditorOptionsRef.current = nextCategoryEditorOptions;
+  }
+  const categoryEditorOptions = categoryEditorOptionsRef.current;
+  const latestPreferencesRef = useRef(preferences);
+  latestPreferencesRef.current = preferences;
   const expenseSlices = useMemo(() => sliceByMain(calculatedBreakdownExpenses, effectiveCategoryMain), [calculatedBreakdownExpenses, effectiveCategoryMain]);
   const incomeSlices = useMemo(() => sliceByMain(calculatedBreakdownIncomes, effectiveCategoryMain), [calculatedBreakdownIncomes, effectiveCategoryMain]);
   const expenseSummaryByCategory = useMemo(() => {
@@ -845,6 +861,32 @@ export function MonthlyView({
         .filter(txMatchesVisibleSearch),
     [categoryListed, txMatchesVisibleSearch]
   );
+  const debitDetailsByTransactionId = useMemo(() => {
+    const detailsById = new Map<string, { all: Transaction[]; visible: Transaction[] }>();
+    for (const tx of listed) {
+      const all = tx.detailTransactions?.length ? tx.detailTransactions : fallbackDebitDetails.get(tx.id) ?? [];
+      const visible = all.filter((detail) => {
+        if (categoryFilter && effectiveCategoryMain(detail) !== categoryFilter) return false;
+        if (!isInExpenseScope(detail, expenseScope, fixedExpenseKeys)) return false;
+        if (cardFilter && !matchesCardFilter(detail, cardFilter)) return false;
+        if (normalizedSearchQuery && !detailSelfMatchesSearch(detail, normalizedSearchQuery, effectiveCategoryMain(detail))) {
+          return false;
+        }
+        return true;
+      });
+      detailsById.set(tx.id, { all, visible });
+    }
+    return detailsById;
+  }, [
+    cardFilter,
+    categoryFilter,
+    effectiveCategoryMain,
+    expenseScope,
+    fallbackDebitDetails,
+    fixedExpenseKeys,
+    listed,
+    normalizedSearchQuery,
+  ]);
   const categoryExpenseGroups = useMemo<CategoryExpenseGroup[]>(() => {
     if (!categoryFilter) return [];
 
@@ -901,14 +943,15 @@ export function MonthlyView({
   const categorizeMerchant = useCallback((tx: Transaction, category: string) => {
     const merchant = merchantKey(tx);
     const raw = category.trim();
-    const isKnownCategory = categoryEditorOptions.some((option) => option.value === raw);
+    const isKnownCategory = categoryEditorOptionsRef.current.some((option) => option.value === raw);
     const value = raw && isKnownCategory ? raw : raw ? customCategoryKey(raw) : "";
-    const next = { ...sectionOverrides };
+    const currentPreferences = latestPreferencesRef.current;
+    const next = { ...currentPreferences.sectionOverrides };
     const key = overrideKey(tx.categoryMain, merchant);
     if (value) next[key] = value;
     else delete next[key];
-    onPreferencesChange({ ...preferences, sectionOverrides: next });
-  }, [categoryEditorOptions, onPreferencesChange, preferences, sectionOverrides]);
+    onPreferencesChange({ ...currentPreferences, sectionOverrides: next });
+  }, [onPreferencesChange]);
 
   function oneTimeKey(tx: Transaction): string {
     return overrideKey(tx.categoryMain, merchantKey(tx));
@@ -1366,16 +1409,7 @@ export function MonthlyView({
             </thead>
             <tbody>
               {listed.map((tx) => {
-                const allDebitDetails = tx.detailTransactions?.length ? tx.detailTransactions : fallbackDebitDetails.get(tx.id) ?? [];
-                const debitDetails = allDebitDetails.filter((detail) => {
-                  if (categoryFilter && effectiveCategoryMain(detail) !== categoryFilter) return false;
-                  if (!isInExpenseScope(detail, expenseScope, fixedExpenseKeys)) return false;
-                  if (cardFilter && !matchesCardFilter(detail, cardFilter)) return false;
-                  if (normalizedSearchQuery && !detailSelfMatchesSearch(detail, normalizedSearchQuery, effectiveCategoryMain(detail))) {
-                    return false;
-                  }
-                  return true;
-                });
+                const { all: allDebitDetails, visible: debitDetails } = debitDetailsByTransactionId.get(tx.id) ?? { all: [], visible: [] };
                 const displayTx = transactionForDisplayedDebitDetails(tx, debitDetails);
                 const singleDebitDetail = displayTx === tx ? null : displayTx;
                 const displayCategoryMain = effectiveCategoryMain(displayTx);
@@ -1523,9 +1557,10 @@ export function MonthlyView({
                       )}
                       {(!isCardDebit(tx) || singleDebitDetail) && (
                         <MonthlyCategoryPicker
+                          transaction={displayTx}
                           value={sectionOverrides[overrideKey(displayTx.categoryMain, merchantKey(displayTx))] ?? displayTx.categoryMain}
                           options={categoryEditorOptions}
-                          onChange={(nextCategory) => categorizeMerchant(displayTx, nextCategory)}
+                          onChange={categorizeMerchant}
                         />
                       )}
                     </span>
@@ -1628,9 +1663,10 @@ export function MonthlyView({
                                   </button>
                                 )}
                                 <MonthlyCategoryPicker
+                                  transaction={detail}
                                   value={sectionOverrides[overrideKey(detail.categoryMain, merchantKey(detail))] ?? detail.categoryMain}
                                   options={categoryEditorOptions}
-                                  onChange={(nextCategory) => categorizeMerchant(detail, nextCategory)}
+                                  onChange={categorizeMerchant}
                                 />
                               </span>
                               <span className="debit-detail-amount">{highlightSearchText(detailAmount, visibleSearchQuery)}</span>
@@ -1803,14 +1839,16 @@ function CategoryExpenseStatistics({
   );
 }
 
-function MonthlyCategoryPicker({
+const MonthlyCategoryPicker = memo(function MonthlyCategoryPicker({
+  transaction,
   value,
   options,
   onChange,
 }: {
+  transaction: Transaction;
   value: string;
   options: Array<{ value: string; label: string }>;
-  onChange: (category: string) => void;
+  onChange: (transaction: Transaction, category: string) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [isCreating, setIsCreating] = useState(false);
@@ -1836,7 +1874,7 @@ function MonthlyCategoryPicker({
           }
           setOptimisticValue(next);
           setIsCreating(false);
-          onChange(next);
+          onChange(transaction, next);
         }}
         aria-label="בחירת קטגוריה לעסקה"
       >
@@ -1854,14 +1892,14 @@ function MonthlyCategoryPicker({
           onBlur={() => {
             if (draft.trim()) {
               setOptimisticValue(draft.trim());
-              onChange(draft);
+              onChange(transaction, draft);
               setIsCreating(false);
             }
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && draft.trim()) {
               setOptimisticValue(draft.trim());
-              onChange(draft);
+              onChange(transaction, draft);
               setIsCreating(false);
             }
           }}
@@ -1871,4 +1909,4 @@ function MonthlyCategoryPicker({
       )}
     </span>
   );
-}
+});

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizePreferences, normalizePreferencesPatch } from "../server/preferences.ts";
-import { wereAlertApprovalsPersisted } from "../src/api/preferences.ts";
+import {
+  loadPreferences,
+  patchPreferences,
+  singleSectionOverrideDelta,
+  wereAlertApprovalsPersisted,
+} from "../src/api/preferences.ts";
 
 test("preference normalization rejects malformed nested values and impossible dates", () => {
   const normalized = normalizePreferences({
@@ -100,4 +105,57 @@ test("the client accepts an alert approval only when the server echoes every sav
     }),
     true
   );
+});
+
+test("a single category change is represented as a small merchant delta", () => {
+  const delta = singleSectionOverrideDelta(
+      { "Merchant A": "SHOPPING", "Merchant B": "TRANSPORT" },
+      { "Merchant A": "FOOD_&_DRINKS", "Merchant B": "TRANSPORT" }
+    );
+  assert.deepEqual(delta, { merchant: "Merchant A", category: "FOOD_&_DRINKS" });
+  assert.ok(Buffer.byteLength(JSON.stringify(delta)) < 1_024);
+  assert.deepEqual(
+    singleSectionOverrideDelta({ "Merchant A": "SHOPPING" }, {}),
+    { merchant: "Merchant A", category: null }
+  );
+});
+
+test("multiple category changes retain the full-map fallback", () => {
+  assert.equal(
+    singleSectionOverrideDelta(
+      { "Merchant A": "SHOPPING", "Merchant B": "TRANSPORT" },
+      { "Merchant A": "FOOD_&_DRINKS", "Merchant B": "SHOPPING" }
+    ),
+    null
+  );
+});
+
+test("category saving falls back to the full preferences patch when the delta endpoint is unavailable", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; method: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    requests.push({ url, method });
+    if (url === "/api/preferences" && method === "GET") {
+      return new Response(JSON.stringify({ sectionOverrides: {} }), { status: 200 });
+    }
+    if (url === "/api/category-override") {
+      return new Response(JSON.stringify({ error: "NOT_FOUND" }), { status: 404 });
+    }
+    return new Response(JSON.stringify({ sectionOverrides: { "Merchant A": "TRANSPORT" } }), { status: 200 });
+  };
+
+  try {
+    await loadPreferences();
+    const saved = await patchPreferences({ sectionOverrides: { "Merchant A": "TRANSPORT" } });
+    assert.equal(saved.sectionOverrides["Merchant A"], "TRANSPORT");
+    assert.deepEqual(requests, [
+      { url: "/api/preferences", method: "GET" },
+      { url: "/api/category-override", method: "PATCH" },
+      { url: "/api/preferences", method: "PATCH" },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

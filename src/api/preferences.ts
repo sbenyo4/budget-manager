@@ -1,4 +1,5 @@
 import { authFetch, setAuthToken } from "./authToken";
+import { recordPatchRequest } from "../logic/performanceMetrics";
 
 export interface AuthUser {
   id: string;
@@ -20,6 +21,25 @@ export interface BudgetPreferences {
   householdSize: number | null;
   autoLogoutMinutes: number;
   theme: "light" | "dark";
+}
+
+export interface SectionOverrideDelta {
+  merchant: string;
+  category: string | null;
+}
+
+export function singleSectionOverrideDelta(
+  previous: Record<string, string>,
+  next: Record<string, string>
+): SectionOverrideDelta | null {
+  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+  let delta: SectionOverrideDelta | null = null;
+  for (const merchant of keys) {
+    if (previous[merchant] === next[merchant]) continue;
+    if (delta) return null;
+    delta = { merchant, category: next[merchant] ?? null };
+  }
+  return delta;
 }
 
 export interface ServiceSettings {
@@ -101,6 +121,7 @@ function normalizeClientPreferences(value: Partial<BudgetPreferences>): BudgetPr
 }
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
+  if (init?.method === "PATCH") recordPatchRequest(url, init.body);
   const res = await authFetch(url, {
     ...init,
     headers: {
@@ -117,10 +138,19 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
     } catch {
       // Keep the raw response text when the body is not JSON.
     }
-    throw new Error(message);
+    throw new ApiRequestError(message, res.status);
   }
   return (await res.json()) as T;
 }
+
+class ApiRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
+let categoryDeltaEndpointSupported: boolean | undefined;
 
 export function getAuthConfig(): Promise<{ googleClientId: string }> {
   return apiJson("/api/auth/config");
@@ -193,6 +223,33 @@ export function wereAlertApprovalsPersisted(
 }
 
 export async function patchPreferences(preferences: Partial<BudgetPreferences>): Promise<BudgetPreferences> {
+  if (
+    categoryDeltaEndpointSupported !== false &&
+    Object.keys(preferences).length === 1 &&
+    preferences.sectionOverrides
+  ) {
+    const delta = singleSectionOverrideDelta(lastKnownPreferences.sectionOverrides, preferences.sectionOverrides);
+    if (delta) {
+      try {
+        const saved = await apiJson<SectionOverrideDelta & { revision: string }>("/api/category-override", {
+          method: "PATCH",
+          body: JSON.stringify(delta),
+        });
+        if (saved.merchant !== delta.merchant || saved.category !== delta.category || !saved.revision) {
+          throw new Error("Category override was not confirmed by the server");
+        }
+        categoryDeltaEndpointSupported = true;
+        const sectionOverrides = { ...lastKnownPreferences.sectionOverrides };
+        if (saved.category === null) delete sectionOverrides[saved.merchant];
+        else sectionOverrides[saved.merchant] = saved.category;
+        lastKnownPreferences = normalizeClientPreferences({ ...lastKnownPreferences, sectionOverrides });
+        return lastKnownPreferences;
+      } catch (error) {
+        if (!(error instanceof ApiRequestError) || (error.status !== 404 && error.status !== 405)) throw error;
+        categoryDeltaEndpointSupported = false;
+      }
+    }
+  }
   const saved = await apiJson<Partial<BudgetPreferences>>("/api/preferences", {
     method: "PATCH",
     body: JSON.stringify(preferences),

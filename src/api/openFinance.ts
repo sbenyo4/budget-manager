@@ -15,9 +15,9 @@ export interface Account {
  * Current ILS checking-account balance (sum over checking accounts), or null
  * in demo mode / on failure — the UI falls back to relative cumulative sums.
  */
-export async function fetchCheckingBalance(): Promise<{ balance: number; date: string } | null> {
+export async function fetchCheckingBalance(signal?: AbortSignal): Promise<{ balance: number; date: string } | null> {
   try {
-    const res = await authFetch("/api/accounts");
+    const res = await authFetch("/api/accounts", { signal });
     if (!res.ok) return null;
     const accounts = (await res.json()) as Account[];
     const checking = accounts.filter((a) => a.accountType === "CHECKING" && a.currency === "ILS");
@@ -26,7 +26,8 @@ export async function fetchCheckingBalance(): Promise<{ balance: number; date: s
       balance: checking.reduce((s, a) => s + a.balance, 0),
       date: checking[0].balanceDate,
     };
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw error;
     return null;
   }
 }
@@ -141,8 +142,8 @@ export function dedupeCardProviderAliasTransactions(transactions: Transaction[])
  * server-side only). Missing per-user credentials are surfaced to the UI so it
  * can ask the user to fill settings instead of showing unrelated sample data.
  */
-export async function fetchTransactions(from: string, to: string): Promise<FetchResult> {
-  const res = await authFetch(`/api/transactions?from=${from}&to=${to}`);
+export async function fetchTransactions(from: string, to: string, signal?: AbortSignal): Promise<FetchResult> {
+  const res = await authFetch(`/api/transactions?from=${from}&to=${to}`, { signal });
   if (!res.ok) {
     const text = await res.text();
     let message = text || `HTTP ${res.status}`;
@@ -172,12 +173,13 @@ export async function fetchTransactions(from: string, to: string): Promise<Fetch
   };
 }
 
-export async function fetchBudgetData(from: string, to: string): Promise<BudgetDataResult> {
-  const transactionsPromise = fetchTransactions(from, to);
-  const balancePromise = fetchCheckingBalance();
-  const result = await transactionsPromise;
+export async function fetchBudgetData(from: string, to: string, signal?: AbortSignal): Promise<BudgetDataResult> {
+  const [result, bankBalance] = await Promise.all([
+    fetchTransactions(from, to, signal),
+    fetchCheckingBalance(signal),
+  ]);
   return {
     ...result,
-    bankBalance: result.demo ? null : await balancePromise,
+    bankBalance: result.demo ? null : bankBalance,
   };
 }

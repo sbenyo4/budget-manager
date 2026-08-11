@@ -14,6 +14,7 @@ import { hashPin, verifyPinHash } from "./server/pinSecurity";
 import { fetchWithTimeout } from "./server/fetchWithTimeout";
 import { normalizePreferences, normalizePreferencesPatch } from "./server/preferences";
 import { isValidAIAnalysisPayload } from "./server/aiPayload";
+import { normalizeCategoryOverrideInput } from "./server/categoryOverride";
 
 /**
  * Server-side proxy for the open-finance.ai API.
@@ -439,6 +440,34 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       if (token) deleteSession.run(tokenHash(token));
       sendJson(res, 200, { ok: true });
       return;
+    }
+
+    if (url.pathname === "/api/category-override") {
+      const user = currentUser(req);
+      if (!user) {
+        sendJson(res, 401, { error: "AUTH_REQUIRED" });
+        return;
+      }
+      if (req.method === "PATCH") {
+        readBody(req)
+          .then((raw) => {
+            const input = normalizeCategoryOverrideInput(JSON.parse(raw));
+            if (!input) {
+              sendJson(res, 400, { error: "INVALID_CATEGORY_OVERRIDE" });
+              return;
+            }
+            const { merchant, category } = input;
+            const row = getPrefs.get(user.id) as { data: string } | undefined;
+            const base = row ? normalizePreferences(JSON.parse(row.data)) : PREFS_DEFAULT;
+            const sectionOverrides = { ...base.sectionOverrides };
+            if (category === null) delete sectionOverrides[merchant];
+            else sectionOverrides[merchant] = category;
+            upsertPrefs.run(user.id, JSON.stringify({ ...base, sectionOverrides }));
+            sendJson(res, 200, { merchant, category, revision: new Date().toISOString() });
+          })
+          .catch((err: unknown) => sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) }));
+        return;
+      }
     }
 
     if (url.pathname === "/api/preferences") {
@@ -1194,7 +1223,10 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
 
 export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  const remoteApiOrigin = env.BUDGET_API_ORIGIN?.replace(/\/$/, "");
+  const configuredApiOrigin = env.BUDGET_API_ORIGIN?.trim();
+  const remoteApiOrigin = configuredApiOrigin && configuredApiOrigin.toLowerCase() !== "local"
+    ? configuredApiOrigin.replace(/\/$/, "")
+    : "";
   const devPlugins = command === "serve" && !remoteApiOrigin ? [preferencesAuth(env), openFinanceProxy(env)] : [];
   return {
     plugins: [react(), ...devPlugins],

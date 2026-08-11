@@ -3,6 +3,7 @@ import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { budgetDate, isConsumption, isSavings } from "../logic/flows";
 import { isRepeatedExpenseGroup } from "../logic/expenseRecurrence";
+import { fixedExpenseKey, fixedExpenseKeysFor } from "../logic/expenseScope";
 import type { BudgetPreferences } from "../api/preferences";
 import { mainColor, subLabel } from "../logic/categoryNames";
 import {
@@ -65,9 +66,6 @@ type ExpenseScope = "all" | "fixed" | "variable";
 
 /** Money movements that are neither earnings nor consumption. */
 const NON_FLOW_MAINS = new Set(["TRADING", "TRANSFER", "ASSETS", "DEPOSIT"]);
-function fixedExpenseKey(tx: Transaction): string {
-  return `${tx.categoryMain}::${merchantKey(tx)}`;
-}
 
 function isInExpenseScope(tx: Transaction, expenseScope: ExpenseScope, fixedExpenseKeys: Set<string>): boolean {
   if (expenseScope === "all") return true;
@@ -287,43 +285,6 @@ function fixedBreakdownFor(
   });
 }
 
-function fixedExpenseKeysFor(
-  transactions: Transaction[],
-  periods: Period[],
-  from: string,
-  to: string,
-  oneTimeKeys: Set<string>,
-  forcedFixedKeys: Set<string>
-): Set<string> {
-  const groups = new Map<string, { tx: Transaction; count: number; periodKeys: Set<string>; recurring: boolean; transactions: Transaction[] }>();
-
-  for (const tx of transactions) {
-    if (tx.type === "income" || !isConsumption(tx)) continue;
-    const date = budgetDate(tx);
-    if (date < from || date > to) continue;
-    const key = fixedExpenseKey(tx);
-    const periodKey = periodKeyFor(date, periods);
-    const group = groups.get(key) ?? { tx, count: 0, periodKeys: new Set<string>(), recurring: false, transactions: [] };
-    group.count += 1;
-    group.recurring = group.recurring || Boolean(tx.recurring);
-    group.transactions.push(tx);
-    if (periodKey) group.periodKeys.add(periodKey);
-    groups.set(key, group);
-  }
-
-  const fixedKeys = new Set<string>();
-  for (const [key, group] of groups) {
-    const oneTimeKey = overrideKey(group.tx.categoryMain, merchantKey(group.tx));
-    if (forcedFixedKeys.has(oneTimeKey)) {
-      fixedKeys.add(key);
-      continue;
-    }
-    if (oneTimeKeys.has(oneTimeKey)) continue;
-    if (isFixedGroup(group)) fixedKeys.add(key);
-  }
-  return fixedKeys;
-}
-
 function customSectionKey(category: string, key: string, label: string): string {
   return key.startsWith("section:") ? `section:${category}::${label}` : overrideKey(category, key);
 }
@@ -428,9 +389,16 @@ export function TrendsView({
   // category options: consumption mains seen in the chosen span, largest first
   const rangeFrom = chosen[chosen.length - 1]?.from ?? "";
   const rangeTo = chosen[0]?.to ?? "";
+  const fixedExpenseTransactions = useMemo(
+    () => searchedTransactions.filter((tx) => {
+      const date = budgetDate(tx);
+      return Boolean(rangeFrom && rangeTo && date >= rangeFrom && date <= rangeTo);
+    }),
+    [rangeFrom, rangeTo, searchedTransactions]
+  );
   const fixedExpenseKeys = useMemo(
-    () => fixedExpenseKeysFor(searchedTransactions, chosen, rangeFrom, rangeTo, oneTimeExpenses, fixedExpenses),
-    [searchedTransactions, chosen, fixedExpenses, oneTimeExpenses, rangeFrom, rangeTo]
+    () => fixedExpenseKeysFor(fixedExpenseTransactions, chosen, oneTimeExpenses, fixedExpenses),
+    [chosen, fixedExpenseTransactions, fixedExpenses, oneTimeExpenses]
   );
   const trendAlertTransactions = useMemo(
     () =>

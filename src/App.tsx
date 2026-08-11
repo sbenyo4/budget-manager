@@ -26,7 +26,9 @@ import { MonthlyView } from "./components/MonthlyView";
 import { TrendsView } from "./components/TrendsView";
 import { AIAnalysisView } from "./components/AIAnalysisView";
 import { AlertsView } from "./components/AlertsView";
+import { PerformanceProfiler } from "./components/PerformanceProfiler";
 import { useAutoLogout } from "./hooks/useAutoLogout";
+import { markPerformanceInteraction } from "./logic/performanceMetrics";
 import {
   detectHighCheckingBalanceAlert,
   detectTransactionAlerts,
@@ -305,17 +307,19 @@ function BudgetApp() {
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     if (!user || pinGate !== "unlocked") {
       setLoading(false);
       return () => {
         cancelled = true;
+        controller.abort();
       };
     }
     setLoading(true);
     setError(null);
     setServiceSettingsRequired(false);
     // One wide fetch feeds both views: ~13 months back for salary-period history
-    fetchBudgetData(isoDaysAgo(400), endOfCurrentYear())
+    fetchBudgetData(isoDaysAgo(400), endOfCurrentYear(), controller.signal)
       .then(({ transactions: txs, demo, bankBalance: nextBankBalance }) => {
         if (cancelled) return;
         setAllTransactions(txs);
@@ -323,7 +327,7 @@ function BudgetApp() {
         if (!demo) setBankBalance(nextBankBalance);
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
+        if (cancelled || controller.signal.aborted) return;
         const message = err instanceof Error ? err.message : String(err);
         if (message === "SERVICE_SETTINGS_REQUIRED") {
           setAllTransactions([]);
@@ -339,6 +343,7 @@ function BudgetApp() {
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [dataReloadKey, pinGate, user]);
 
@@ -365,7 +370,9 @@ function BudgetApp() {
   }, [pinGate, user]);
 
   const updatePreferences = useCallback((next: BudgetPreferences) => {
-    const patch = changedPreferences(preferencesRef.current, next);
+    const previousPreferences = preferencesRef.current;
+    const patch = changedPreferences(previousPreferences, next);
+    if (patch.sectionOverrides) markPerformanceInteraction("category-select-to-paint");
     preferencesRef.current = next;
     const saveSeq = preferencesSaveSeq.current + 1;
     preferencesSaveSeq.current = saveSeq;
@@ -394,6 +401,8 @@ function BudgetApp() {
         })
         .catch((err: unknown) => {
           if (preferencesSaveSeq.current !== saveSeq) return;
+          preferencesRef.current = previousPreferences;
+          startPreferencesTransition(() => setPreferences(previousPreferences));
           setSaveState("error");
           setError(err instanceof Error ? err.message : String(err));
         });
@@ -519,7 +528,7 @@ function BudgetApp() {
     [allTransactions, preferences.sectionOverrides]
   );
 
-  const periods = useMemo(() => buildPeriods(learnedTransactions), [learnedTransactions]);
+  const periods = useMemo(() => buildPeriods(allTransactions), [allTransactions]);
   const displayTransactions = useMemo(() => tagSalaries(learnedTransactions), [learnedTransactions]);
   const activeAlerts = useMemo(() => {
     const transactionAlerts = detectTransactionAlerts(displayTransactions, {
@@ -804,13 +813,15 @@ function BudgetApp() {
       )}
 
       {!loading && !error && !serviceSettingsRequired && view === "monthly" && (
-        <MonthlyView
-          transactions={displayTransactions}
-          periods={periods}
-          bankBalance={bankBalance}
-          preferences={preferences}
-          onPreferencesChange={updatePreferences}
-        />
+        <PerformanceProfiler id="monthly-view">
+          <MonthlyView
+            transactions={displayTransactions}
+            periods={periods}
+            bankBalance={bankBalance}
+            preferences={preferences}
+            onPreferencesChange={updatePreferences}
+          />
+        </PerformanceProfiler>
       )}
 
       {!loading && !error && !serviceSettingsRequired && view === "trends" && (
