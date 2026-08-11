@@ -1,5 +1,5 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState, useTransition, type FormEvent, type ReactNode } from "react";
-import { fetchCheckingBalance, fetchTransactions } from "./api/openFinance";
+import { fetchBudgetData } from "./api/openFinance";
 import {
   emptyServiceSettings,
   emptyPreferences,
@@ -315,16 +315,12 @@ function BudgetApp() {
     setError(null);
     setServiceSettingsRequired(false);
     // One wide fetch feeds both views: ~13 months back for salary-period history
-    fetchTransactions(isoDaysAgo(400), endOfCurrentYear())
-      .then(({ transactions: txs, demo }) => {
+    fetchBudgetData(isoDaysAgo(400), endOfCurrentYear())
+      .then(({ transactions: txs, demo, bankBalance: nextBankBalance }) => {
         if (cancelled) return;
         setAllTransactions(txs);
         setIsDemoMode(demo);
-        if (!demo) {
-          return fetchCheckingBalance().then((balance) => {
-            if (!cancelled) setBankBalance(balance);
-          });
-        }
+        if (!demo) setBankBalance(nextBankBalance);
       })
       .catch((err: unknown) => {
         if (cancelled) return;

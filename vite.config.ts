@@ -83,8 +83,8 @@ interface RawTransaction {
   providerId?: string;
   date?: { valueDate?: string; bookingDate?: string; transactionDate?: string };
   amount?: {
-    originalAmount?: { amount?: number; currency?: string };
-    chargedAmount?: { amount?: number; currency?: string };
+    originalAmount?: { amount?: number | string; currency?: string };
+    chargedAmount?: { amount?: number | string; currency?: string };
   };
   description?: { description?: string; additionalInfo?: string };
   merchantName?: string;
@@ -770,11 +770,16 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
   }
 
   function finiteAmount(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+    if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+    if (typeof value !== "string" || value.trim() === "") return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
   }
 
   function rawAmount(raw: RawTransaction): number {
-    const charged = finiteAmount(raw.amount?.chargedAmount?.amount);
+    const chargedValue = raw.amount?.chargedAmount?.amount;
+    if (typeof chargedValue === "string" && chargedValue.trim() === "") return 0;
+    const charged = finiteAmount(chargedValue);
     if (charged !== undefined) return charged;
 
     const original = finiteAmount(raw.amount?.originalAmount?.amount);

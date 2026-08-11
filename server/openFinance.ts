@@ -27,8 +27,8 @@ export interface RawTransaction {
   providerId?: string;
   date?: { valueDate?: string; bookingDate?: string; transactionDate?: string };
   amount?: {
-    originalAmount?: { amount?: number; currency?: string };
-    chargedAmount?: { amount?: number; currency?: string };
+    originalAmount?: { amount?: number | string; currency?: string };
+    chargedAmount?: { amount?: number | string; currency?: string };
   };
   description?: { description?: string; additionalInfo?: string };
   merchantName?: string;
@@ -146,11 +146,16 @@ async function fetchTransactions(
 }
 
 function finiteAmount(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function rawAmount(raw: RawTransaction): number {
-  const charged = finiteAmount(raw.amount?.chargedAmount?.amount);
+  const chargedValue = raw.amount?.chargedAmount?.amount;
+  if (typeof chargedValue === "string" && chargedValue.trim() === "") return 0;
+  const charged = finiteAmount(chargedValue);
   if (charged !== undefined) return charged;
 
   const original = finiteAmount(raw.amount?.originalAmount?.amount);
@@ -312,6 +317,13 @@ function richerCardRecord(a: NormalizedTransaction, b: NormalizedTransaction): N
   };
 }
 
+function isConfirmedCardProviderAlias(a: NormalizedTransaction, b: NormalizedTransaction): boolean {
+  const billingDateCompletenessDiffers = Boolean(a.billingDate) !== Boolean(b.billingDate);
+  const pendingStatusDiffers = isPendingStatus(a.status) !== isPendingStatus(b.status);
+  const merchantSuffixDiffers = hasMerchantProviderSuffix(a.merchant) !== hasMerchantProviderSuffix(b.merchant);
+  return pendingStatusDiffers && (billingDateCompletenessDiffers || merchantSuffixDiffers);
+}
+
 function dedupeTransactions(transactions: NormalizedTransaction[]): NormalizedTransaction[] {
   const seen = new Set<string>();
   const unique: NormalizedTransaction[] = [];
@@ -326,7 +338,7 @@ function dedupeTransactions(transactions: NormalizedTransaction[]): NormalizedTr
     const cardFingerprint = cardPurchaseFingerprint(tx);
     if (cardFingerprint) {
       const indexes = cardPurchaseIndexes.get(cardFingerprint) ?? [];
-      const matchingIndex = indexes[0];
+      const matchingIndex = indexes.find((index) => isConfirmedCardProviderAlias(unique[index], tx));
       if (matchingIndex !== undefined) {
         unique[matchingIndex] = richerCardRecord(unique[matchingIndex], tx);
         continue;

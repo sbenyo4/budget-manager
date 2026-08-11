@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host localhost",
     "build": "tsc && vite build",
+    "bench:categories": "tsx scripts/benchmark-category-overrides.ts",
     "test": "tsx --test tests/*.test.ts",
     "migrate:preferences": "node scripts/migrate-preferences-to-neon.mjs",
     "preview": "vite preview"

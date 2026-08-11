@@ -37,6 +37,10 @@ export interface FetchResult {
   demo: boolean;
 }
 
+export interface BudgetDataResult extends FetchResult {
+  bankBalance: { balance: number; date: string } | null;
+}
+
 function pendingInvestmentKey(tx: Transaction): string | null {
   if (tx.source !== "bank" || tx.status?.toUpperCase() !== "PENDING") return null;
   const merchant = tx.merchant.replace(/[\s\-–—_'״”"]/g, "").toLowerCase();
@@ -95,9 +99,18 @@ function cardTransactionScore(tx: Transaction): number {
   );
 }
 
+function isConfirmedCardProviderAlias(a: Transaction, b: Transaction): boolean {
+  const billingDateCompletenessDiffers = Boolean(a.billingDate) !== Boolean(b.billingDate);
+  const pendingStatusDiffers =
+    (a.status?.toUpperCase() === "PENDING") !== (b.status?.toUpperCase() === "PENDING");
+  const merchantSuffixDiffers =
+    hasCardMerchantProviderSuffix(a.merchant) !== hasCardMerchantProviderSuffix(b.merchant);
+  return pendingStatusDiffers && (billingDateCompletenessDiffers || merchantSuffixDiffers);
+}
+
 export function dedupeCardProviderAliasTransactions(transactions: Transaction[]): Transaction[] {
   const unique: Transaction[] = [];
-  const cardIndexes = new Map<string, number>();
+  const cardIndexes = new Map<string, number[]>();
   for (const tx of transactions) {
     if (tx.source !== "card") {
       unique.push(tx);
@@ -109,12 +122,14 @@ export function dedupeCardProviderAliasTransactions(transactions: Transaction[])
       Math.round(tx.amount * 100),
       normalizedCardMerchant(tx.merchant),
     ].join(":");
-    const existingIndex = cardIndexes.get(key);
+    const indexes = cardIndexes.get(key) ?? [];
+    const existingIndex = indexes.find((index) => isConfirmedCardProviderAlias(unique[index], tx));
     if (existingIndex !== undefined) {
       if (cardTransactionScore(tx) > cardTransactionScore(unique[existingIndex])) unique[existingIndex] = tx;
       continue;
     }
-    cardIndexes.set(key, unique.length);
+    indexes.push(unique.length);
+    cardIndexes.set(key, indexes);
     unique.push(tx);
   }
   return unique;
@@ -127,17 +142,6 @@ export function dedupeCardProviderAliasTransactions(transactions: Transaction[])
  * can ask the user to fill settings instead of showing unrelated sample data.
  */
 export async function fetchTransactions(from: string, to: string): Promise<FetchResult> {
-  const status = await authFetch("/api/status")
-    .then(async (r) => {
-      if (!r.ok) return { configured: false };
-      return (await r.json()) as { configured: boolean };
-    })
-    .catch(() => ({ configured: false }));
-
-  if (!status.configured) {
-    throw new Error("SERVICE_SETTINGS_REQUIRED");
-  }
-
   const res = await authFetch(`/api/transactions?from=${from}&to=${to}`);
   if (!res.ok) {
     const text = await res.text();
@@ -165,5 +169,15 @@ export async function fetchTransactions(from: string, to: string): Promise<Fetch
   return {
     transactions: dedupePendingInvestmentTransactions(dedupeCardProviderAliasTransactions(transactions)),
     demo: false,
+  };
+}
+
+export async function fetchBudgetData(from: string, to: string): Promise<BudgetDataResult> {
+  const transactionsPromise = fetchTransactions(from, to);
+  const balancePromise = fetchCheckingBalance();
+  const result = await transactionsPromise;
+  return {
+    ...result,
+    bankBalance: result.demo ? null : await balancePromise,
   };
 }

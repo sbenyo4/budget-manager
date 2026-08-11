@@ -23,13 +23,13 @@ function tx(overrides: Partial<Transaction>): Transaction {
   };
 }
 
-test("pending aggregate card debits do not advance charged cutoffs", () => {
+test("pending aggregate debits do not advance cutoffs and known-card debits stay card-scoped", () => {
   const cutoffs = cardDebitCutoffs([
     tx({ id: "booked", date: "2026-06-10", cardLast4: "1111", categoryMain: "INCOMES_EXPENSES", categorySub: "CREDIT_CARD_CHECKING" }),
     tx({ id: "pending", date: "2026-07-10", status: "PENDING", cardLast4: "1111", categoryMain: "INCOMES_EXPENSES", categorySub: "CREDIT_CARD_CHECKING" }),
   ]);
 
-  assert.equal(cutoffs.latest, "2026-06-10");
+  assert.equal(cutoffs.latest, "");
   assert.equal(cutoffs.byLast4.get("1111"), "2026-06-10");
 });
 
@@ -40,6 +40,26 @@ test("a cutoff for another known card does not mark a card transaction as charge
   const cardTransaction = tx({ source: "card", cardLast4: "2222", billingDate: "2026-07-01" });
 
   assert.equal(isCardTransactionCharged(cardTransaction, cutoffs), false);
+});
+
+test("an unmatched booked card debit does not hide unidentified card transactions", () => {
+  const unmatchedDebit = tx({
+    id: "unmatched-debit",
+    source: "bank",
+    date: "2026-08-10",
+    categoryMain: "INCOMES_EXPENSES",
+    categorySub: "CREDIT_CARD_CHECKING",
+  });
+  const unidentifiedCardTransaction = tx({
+    id: "unidentified-card-transaction",
+    source: "card",
+    date: "2026-08-01",
+    billingDate: "2026-08-10",
+  });
+  const cutoffs = cardDebitCutoffs([unmatchedDebit, unidentifiedCardTransaction]);
+
+  assert.equal(cutoffs.latest, "");
+  assert.equal(isCardTransactionCharged(unidentifiedCardTransaction, cutoffs), false);
 });
 
 test("small transfers and outgoing checks remain consumption", () => {

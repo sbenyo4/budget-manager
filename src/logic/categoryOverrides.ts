@@ -137,6 +137,11 @@ const RECURRING_MERCHANT_PATTERNS = [
 ];
 
 const BRAND_MATCH_TOKENS = ["spotify", "ספוטיפיי", "netflix", "נטפליקס", "openai", "chatgpt", "icloud"];
+const COMPACT_BRAND_MATCH_TOKENS = BRAND_MATCH_TOKENS.map((brand) =>
+  brand
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "")
+);
 const GENERIC_MERCHANT_TOKENS = new Set([
   "paypal",
   "paybox",
@@ -219,10 +224,47 @@ function compactMerchantFingerprint(merchant: string): string {
   return merchantFingerprint(merchant).replace(/\s+/g, "");
 }
 
+const COMPILED_DEFAULT_CATEGORY_RULES = DEFAULT_CATEGORY_RULES.map((rule) => ({
+  category: rule.category,
+  patterns: rule.patterns.map((pattern) => {
+    const normalized = merchantFingerprint(pattern);
+    return { normalized, compact: normalized.replace(/\s+/g, "") };
+  }),
+}));
+
+const COMPILED_RECURRING_MERCHANT_PATTERNS = RECURRING_MERCHANT_PATTERNS.map((pattern) => {
+  const normalized = merchantFingerprint(pattern);
+  return { normalized, compact: normalized.replace(/\s+/g, "") };
+});
+
 function meaningfulMerchantTokens(merchant: string): string[] {
   return merchant
     .split(" ")
     .filter((token) => token.length >= 4 && !GENERIC_MERCHANT_TOKENS.has(token));
+}
+
+interface MerchantMatchFeatures {
+  normalized: string;
+  compact: string;
+  tokens: string[];
+  tokenSet: Set<string>;
+  brands: string[];
+  brandSet: Set<string>;
+}
+
+function merchantMatchFeatures(merchant: string): MerchantMatchFeatures {
+  const normalized = merchantFingerprint(merchant);
+  const compact = normalized.replace(/\s+/g, "");
+  const tokens = meaningfulMerchantTokens(normalized);
+  const brands = COMPACT_BRAND_MATCH_TOKENS.filter((brand) => compact.includes(brand));
+  return {
+    normalized,
+    compact,
+    tokens,
+    tokenSet: new Set(tokens),
+    brands,
+    brandSet: new Set(brands),
+  };
 }
 
 function canonicalCategoryKey(labelOrKey: string): string | undefined {
@@ -238,79 +280,83 @@ function canonicalCategoryKey(labelOrKey: string): string | undefined {
 export function defaultCategoryForMerchant(merchant: string): string | undefined {
   const normalized = merchantFingerprint(merchant);
   const compact = compactMerchantFingerprint(merchant);
-  return DEFAULT_CATEGORY_RULES.find((rule) =>
-    rule.patterns.some((pattern) => {
-      const normalizedPattern = merchantFingerprint(pattern);
-      const compactPattern = compactMerchantFingerprint(pattern);
-      return normalized.includes(normalizedPattern) || compact.includes(compactPattern);
-    })
+  return COMPILED_DEFAULT_CATEGORY_RULES.find((rule) =>
+    rule.patterns.some(
+      (pattern) => normalized.includes(pattern.normalized) || compact.includes(pattern.compact)
+    )
   )?.category;
 }
 
 function isKnownRecurringMerchant(merchant: string): boolean {
   const normalized = merchantFingerprint(merchant);
   const compact = compactMerchantFingerprint(merchant);
-  return RECURRING_MERCHANT_PATTERNS.some((pattern) => {
-    const normalizedPattern = merchantFingerprint(pattern);
-    const compactPattern = compactMerchantFingerprint(pattern);
-    return normalized.includes(normalizedPattern) || compact.includes(compactPattern);
-  });
+  return COMPILED_RECURRING_MERCHANT_PATTERNS.some(
+    (pattern) => normalized.includes(pattern.normalized) || compact.includes(pattern.compact)
+  );
 }
 
 function isUsefulLearnedCategory(category: string): boolean {
   return Boolean(category) && category !== "OTHER" && category !== "INCOMES_EXPENSES";
 }
 
-function merchantSimilarityScore(a: string, b: string): number {
-  if (!a || !b) return 0;
-  if (a === b) return 100_000 + a.length;
+function merchantSimilarityScore(a: MerchantMatchFeatures, b: MerchantMatchFeatures): number {
+  if (!a.normalized || !b.normalized) return 0;
+  if (a.normalized === b.normalized) return 100_000 + a.normalized.length;
 
-  const compactA = a.replace(/\s+/g, "");
-  const compactB = b.replace(/\s+/g, "");
-  const brandScore = BRAND_MATCH_TOKENS.reduce((score, brand) => {
-      const compactBrand = compactMerchantFingerprint(brand);
-      return compactA.includes(compactBrand) && compactB.includes(compactBrand)
-        ? Math.max(score, 90_000 + compactBrand.length)
-        : score;
-    }, 0);
+  const brandScore = a.brands.reduce(
+    (score, brand) => b.brandSet.has(brand) ? Math.max(score, 90_000 + brand.length) : score,
+    0
+  );
   if (brandScore) return brandScore;
 
-  if (compactA.length >= 5 && compactB.length >= 5 && (compactA.includes(compactB) || compactB.includes(compactA))) {
-    return 80_000 + Math.min(compactA.length, compactB.length);
+  if (
+    a.compact.length >= 5 &&
+    b.compact.length >= 5 &&
+    (a.compact.includes(b.compact) || b.compact.includes(a.compact))
+  ) {
+    return 80_000 + Math.min(a.compact.length, b.compact.length);
   }
 
-  const tokensA = new Set(meaningfulMerchantTokens(a));
-  const tokensB = meaningfulMerchantTokens(b);
-  const sharedTokens = tokensB.filter((token) => tokensA.has(token));
+  const sharedTokens = b.tokens.filter((token) => a.tokenSet.has(token));
   if (sharedTokens.length < 2) return 0;
   return sharedTokens.reduce((score, token) => score + token.length * token.length, 0);
 }
 
-function bestMerchantMatch<T extends { merchant: string }>(merchant: string, candidates: T[]): T | undefined {
-  let best: { candidate: T; score: number } | undefined;
-  for (const candidate of candidates) {
-    const score = merchantSimilarityScore(merchant, candidate.merchant);
-    if (score <= 0) continue;
-    if (
-      !best ||
-      score > best.score ||
-      (score === best.score && candidate.merchant.length > best.candidate.merchant.length) ||
-      (score === best.score &&
-        candidate.merchant.length === best.candidate.merchant.length &&
-        candidate.merchant.localeCompare(best.candidate.merchant, "he") < 0)
-    ) {
-      best = { candidate, score };
+type MerchantMatcher<T> = (merchant: string) => T | undefined;
+
+function createMerchantMatcher<T extends { merchant: string }>(candidates: T[]): MerchantMatcher<T> {
+  if (candidates.length === 0) return () => undefined;
+  const prepared = candidates.map((candidate) => ({
+    candidate,
+    features: merchantMatchFeatures(candidate.merchant),
+  }));
+  return (merchant: string) => {
+    const features = merchantMatchFeatures(merchant);
+    let best: { candidate: T; score: number } | undefined;
+    for (const entry of prepared) {
+      const candidate = entry.candidate;
+      const score = merchantSimilarityScore(features, entry.features);
+      if (score <= 0) continue;
+      if (
+        !best ||
+        score > best.score ||
+        (score === best.score && candidate.merchant.length > best.candidate.merchant.length) ||
+        (score === best.score &&
+          candidate.merchant.length === best.candidate.merchant.length &&
+          candidate.merchant.localeCompare(best.candidate.merchant, "he") < 0)
+      ) {
+        best = { candidate, score };
+      }
     }
-  }
-  return best?.candidate;
+    return best?.candidate;
+  };
 }
 
 function learnedCategoryForMerchant(
   merchant: string,
-  learned: Array<{ merchant: string; category: string; recurring: boolean }>
+  learnedMatcher: MerchantMatcher<{ merchant: string; category: string; recurring: boolean }>
 ): { category?: string; recurring?: boolean } {
-  const normalized = merchantFingerprint(merchant);
-  const match = bestMerchantMatch(normalized, learned);
+  const match = learnedMatcher(merchant);
   return match ? { category: match.category, recurring: match.recurring } : {};
 }
 
@@ -330,13 +376,12 @@ function savedOverridesFor(overrides: SectionOverrides): SavedOverride[] {
 function savedCategoryForMerchant(
   merchant: string,
   overrides: SectionOverrides,
-  savedOverrides: SavedOverride[]
+  savedOverrideMatcher: MerchantMatcher<SavedOverride>
 ): string | undefined {
   const exact = normalizeCategoryKey(overrides[overrideKey("", merchant)] ?? "");
   if (exact) return exact;
 
-  const normalized = merchantFingerprint(merchant);
-  return bestMerchantMatch(normalized, savedOverrides)?.category;
+  return savedOverrideMatcher(merchant)?.category;
 }
 
 function transactionAndDetails(tx: Transaction): Transaction[] {
@@ -345,13 +390,14 @@ function transactionAndDetails(tx: Transaction): Transaction[] {
 
 export function applyCategoryOverrides(transactions: Transaction[], overrides: SectionOverrides): Transaction[] {
   const savedOverrides = savedOverridesFor(overrides);
+  const savedOverrideMatcher = createMerchantMatcher(savedOverrides);
   const savedCategoryCache = new Map<string, string | undefined>();
   const defaultCategoryCache = new Map<string, string | undefined>();
   const learnedByMerchant = new Map<string, { merchant: string; category: string; recurring: boolean }>();
   for (const tx of transactions.flatMap((transaction) => transactionAndDetails(transaction))) {
     const merchant = merchantKey(tx);
     const category =
-      savedCategoryWithCache(merchant, overrides, savedOverrides, savedCategoryCache) ||
+      savedCategoryWithCache(merchant, overrides, savedOverrideMatcher, savedCategoryCache) ||
       defaultCategoryWithCache(merchant) ||
       normalizeCategoryKey(tx.categoryMain);
     if (!isUsefulLearnedCategory(category)) continue;
@@ -365,17 +411,18 @@ export function applyCategoryOverrides(transactions: Transaction[], overrides: S
     }
   }
   const learned = [...learnedByMerchant.values()];
+  const learnedMatcher = createMerchantMatcher(learned);
   const learnedCache = new Map<string, { category?: string; recurring?: boolean }>();
 
   function savedCategoryWithCache(
     merchant: string,
     currentOverrides: SectionOverrides,
-    currentSavedOverrides: SavedOverride[],
+    currentSavedOverrideMatcher: MerchantMatcher<SavedOverride>,
     cache: Map<string, string | undefined>
   ): string | undefined {
     const normalized = merchantFingerprint(merchant);
     if (cache.has(normalized)) return cache.get(normalized);
-    const category = savedCategoryForMerchant(merchant, currentOverrides, currentSavedOverrides);
+    const category = savedCategoryForMerchant(merchant, currentOverrides, currentSavedOverrideMatcher);
     cache.set(normalized, category);
     return category;
   }
@@ -387,7 +434,7 @@ export function applyCategoryOverrides(transactions: Transaction[], overrides: S
     const exact = learnedByMerchant.get(normalized);
     const result = exact
       ? { category: exact.category, recurring: exact.recurring }
-      : learnedCategoryForMerchant(merchant, learned);
+      : learnedCategoryForMerchant(merchant, learnedMatcher);
     learnedCache.set(normalized, result);
     return result;
   }
@@ -404,7 +451,7 @@ export function applyCategoryOverrides(transactions: Transaction[], overrides: S
     const merchant = merchantKey(tx);
     const learnedMatch = learnedCategoryWithCache(merchant);
     const target =
-      savedCategoryWithCache(merchant, overrides, savedOverrides, savedCategoryCache) ||
+      savedCategoryWithCache(merchant, overrides, savedOverrideMatcher, savedCategoryCache) ||
       defaultCategoryWithCache(merchant) ||
       learnedMatch.category;
     const recurring = tx.recurring || isKnownRecurringMerchant(merchant) || learnedMatch.recurring;

@@ -33,9 +33,18 @@ function hasPendingMerchantProviderSuffix(value: string): boolean {
   );
 }
 
+function isConfirmedPendingProviderAlias(a: Transaction, b: Transaction): boolean {
+  const billingDateCompletenessDiffers = Boolean(a.billingDate) !== Boolean(b.billingDate);
+  const pendingStatusDiffers =
+    (a.status?.toUpperCase() === "PENDING") !== (b.status?.toUpperCase() === "PENDING");
+  const merchantSuffixDiffers =
+    hasPendingMerchantProviderSuffix(a.merchant) !== hasPendingMerchantProviderSuffix(b.merchant);
+  return pendingStatusDiffers && (billingDateCompletenessDiffers || merchantSuffixDiffers);
+}
+
 function dedupePendingDisplayTransactions(transactions: Transaction[]): Transaction[] {
   const unique: Transaction[] = [];
-  const indexes = new Map<string, number>();
+  const indexes = new Map<string, number[]>();
   for (const tx of transactions) {
     const key = [
       tx.cardLast4 ?? "",
@@ -43,7 +52,10 @@ function dedupePendingDisplayTransactions(transactions: Transaction[]): Transact
       Math.round(tx.amount * 100),
       normalizedPendingMerchant(tx.merchant),
     ].join(":");
-    const existingIndex = indexes.get(key);
+    const matchingIndexes = indexes.get(key) ?? [];
+    const existingIndex = matchingIndexes.find((index) =>
+      isConfirmedPendingProviderAlias(unique[index], tx)
+    );
     if (existingIndex !== undefined) {
       if (
         hasPendingMerchantProviderSuffix(unique[existingIndex].merchant) &&
@@ -53,7 +65,8 @@ function dedupePendingDisplayTransactions(transactions: Transaction[]): Transact
       }
       continue;
     }
-    indexes.set(key, unique.length);
+    matchingIndexes.push(unique.length);
+    indexes.set(key, matchingIndexes);
     unique.push(tx);
   }
   return unique;

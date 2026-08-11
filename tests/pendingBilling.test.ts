@@ -62,16 +62,17 @@ test("future charges collapse the booked and pending Brand provider aliases", ()
       cardLast4: "9699",
       merchant: 'בראנד אספקה טכנית בע"מ-צמ',
       amount: 59,
+      status: "BOOKED",
       categoryMain: "SHOPPING",
       categorySub: "SHOPPING_OTHER",
     }),
     tx({
       id: "brand-clean",
       date: "2026-08-09",
-      billingDate: "2026-08-16",
       cardLast4: "9699",
       merchant: 'בראנד אספקה טכנית בע"מ',
       amount: 59,
+      status: "PENDING",
       categoryMain: "SHOPPING",
       categorySub: "SHOPPING_OTHER",
     }),
@@ -82,6 +83,34 @@ test("future charges collapse the booked and pending Brand provider aliases", ()
   assert.equal(result.length, 1);
   assert.equal(result[0].id, "brand-clean");
   assert.equal(result.reduce((total, transaction) => total + transaction.amount, 0), 59);
+});
+
+test("future charges keep two legitimate identical booked purchases", () => {
+  const transactions = [
+    tx({
+      id: "first-booked",
+      date: "2026-08-09",
+      billingDate: "2026-08-16",
+      cardLast4: "9699",
+      merchant: "Same merchant",
+      amount: 59,
+      status: "BOOKED",
+    }),
+    tx({
+      id: "second-booked",
+      date: "2026-08-09",
+      billingDate: "2026-08-16",
+      cardLast4: "9699",
+      merchant: "Same merchant",
+      amount: 59,
+      status: "BOOKED",
+    }),
+  ];
+
+  const result = selectPendingCardTransactions(transactions, cardDebitCutoffs(transactions), "9699");
+
+  assert.deepEqual(result.map(({ id }) => id), ["first-booked", "second-booked"]);
+  assert.equal(result.reduce((total, transaction) => total + transaction.amount, 0), 118);
 });
 
 test("transactions attached to a pending bank debit are clearing, not next-cycle charges", () => {

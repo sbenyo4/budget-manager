@@ -19,12 +19,12 @@ export function cardDebitCutoffs(transactions: Transaction[]): CardDebitCutoffs 
   let latest = "";
   for (const tx of transactions) {
     if (!isCardDebit(tx) || tx.type === "income" || tx.status === "PENDING") continue;
-    if (tx.date > latest) latest = tx.date;
     const cardNumbers = new Set<string>();
     if (tx.cardLast4) cardNumbers.add(tx.cardLast4);
     for (const detail of tx.detailTransactions ?? []) {
       if (detail.cardLast4) cardNumbers.add(detail.cardLast4);
     }
+    if ((tx.detailTransactions?.length ?? 0) > 0 && tx.date > latest) latest = tx.date;
     for (const last4 of cardNumbers) {
       const previous = byLast4.get(last4) ?? "";
       if (tx.date > previous) byLast4.set(last4, tx.date);
