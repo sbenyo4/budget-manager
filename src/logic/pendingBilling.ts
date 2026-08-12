@@ -16,56 +16,6 @@ export interface PendingBillingMonthSummary {
   billingDateCount: number;
 }
 
-function nextMonthlyDateAfter(date: string, today: string): string {
-  const [year, month, day] = date.split("-").map(Number);
-  let candidateYear = year;
-  let candidateMonth = month;
-  let candidate = date;
-  do {
-    candidateMonth += 1;
-    if (candidateMonth > 12) {
-      candidateMonth = 1;
-      candidateYear += 1;
-    }
-    const lastDay = new Date(Date.UTC(candidateYear, candidateMonth, 0)).getUTCDate();
-    candidate = `${candidateYear}-${String(candidateMonth).padStart(2, "0")}-${String(Math.min(day, lastDay)).padStart(2, "0")}`;
-  } while (candidate <= today);
-  return candidate;
-}
-
-/**
- * Providers can temporarily report today's/past billing date for a new
- * PENDING purchase. If that date passed without a matching bank debit, the
- * purchase belongs to the next cycle and must never be presented as a future
- * charge on a past date.
- */
-export function pendingBillingDate(
-  tx: Transaction,
-  transactions: Transaction[],
-  cutoffs: CardDebitCutoffs,
-  today: string
-): string | undefined {
-  if (!tx.billingDate || tx.status?.toUpperCase() !== "PENDING" || tx.billingDate > today) {
-    return tx.billingDate;
-  }
-
-  const knownNextDate = transactions
-    .filter(
-      (candidate) =>
-        Boolean(tx.cardLast4) &&
-        candidate.source === "card" &&
-        candidate.cardLast4 === tx.cardLast4 &&
-        Boolean(candidate.billingDate) &&
-        candidate.billingDate! > today
-    )
-    .map((candidate) => candidate.billingDate!)
-    .sort()[0];
-  if (knownNextDate) return knownNextDate;
-
-  const cutoff = tx.cardLast4 ? cutoffs.byLast4.get(tx.cardLast4) : cutoffs.latest;
-  return nextMonthlyDateAfter(cutoff || tx.billingDate, today);
-}
-
 function normalizedPendingMerchant(value: string): string {
   return value
     .normalize("NFKC")
@@ -142,6 +92,24 @@ export function selectPendingCardTransactions(
         !isCardTransactionCharged(tx, cutoffs)
     )
   );
+}
+
+/**
+ * Only provider-confirmed rows belong to dated billing-cycle totals. A raw
+ * PENDING authorization has no final booking date and remains unassigned
+ * until the provider promotes it to BOOKED.
+ */
+export function partitionOpenCardTransactions(transactions: Transaction[]): {
+  confirmed: Transaction[];
+  providerPending: Transaction[];
+} {
+  const confirmed: Transaction[] = [];
+  const providerPending: Transaction[] = [];
+  for (const tx of transactions) {
+    if (tx.status?.toUpperCase() === "PENDING") providerPending.push(tx);
+    else confirmed.push(tx);
+  }
+  return { confirmed, providerPending };
 }
 
 /**
