@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host localhost",
     "build": "tsc && vite build",
+    "check:deploy": "node scripts/check-vercel-functions.mjs",
     "bench": "npm run bench:categories",
     "bench:categories": "tsx scripts/benchmark-category-overrides.ts",
     "test": "npm run test:run",

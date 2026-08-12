@@ -250,7 +250,10 @@ test("deduplicates card purchases before attaching them to a bank debit", () => 
 
   const normalized = normalizeOpenFinanceTransactions(
     [debit],
-    [baseCardTransaction(), baseCardTransaction()]
+    [
+      baseCardTransaction({ status: "BOOKED" }),
+      baseCardTransaction({ status: "BOOKED" }),
+    ]
   );
   const normalizedDebit = normalized.find((tx) => tx.id === "bank:debit-1");
 
@@ -324,6 +327,50 @@ test("keeps later installment cycles separate while attaching the booked cycle t
 
   assert.deepEqual(normalizedDebit?.detailTransactions?.map(({ id }) => id), ["card:august-installment"]);
   assert.deepEqual(pending.map(({ id }) => id), ["card:september-installment"]);
+});
+
+test("attaches only the booked amount when pending purchases share the debit date and card", () => {
+  const debit: RawTransaction = {
+    id: "debit-with-new-pending-purchase",
+    date: { valueDate: "2026-08-11", bookingDate: "2026-08-11" },
+    amount: {
+      originalAmount: { amount: -101.3, currency: "ILS" },
+      chargedAmount: { amount: -101.3, currency: "ILS" },
+    },
+    merchantName: "card debit without card identifier",
+    category: { main: "INCOMES_EXPENSES", sub: "CREDIT_CARD_CHECKING" },
+    status: "BOOKED",
+  };
+  const bookedPurchase = baseCardTransaction({
+    id: "booked-paypal",
+    accountNumber: "5653",
+    date: { transactionDate: "2026-08-06", valueDate: "2026-08-11" },
+    amount: {
+      originalAmount: { amount: -101.3, currency: "ILS" },
+      chargedAmount: { amount: -101.3, currency: "ILS" },
+    },
+    merchantName: "PAYPAL",
+    status: "BOOKED",
+  });
+  const pendingPurchase = baseCardTransaction({
+    id: "pending-spotify",
+    accountNumber: "5653",
+    date: { transactionDate: "2026-08-11", valueDate: "2026-08-11" },
+    amount: {
+      originalAmount: { amount: -23.9, currency: "ILS" },
+      chargedAmount: { amount: -23.9, currency: "ILS" },
+    },
+    merchantName: "Spotify",
+    status: "PENDING",
+  });
+
+  const normalized = normalizeOpenFinanceTransactions([debit], [bookedPurchase, pendingPurchase]);
+  const normalizedDebit = normalized.find((tx) => tx.id === "bank:debit-with-new-pending-purchase");
+  const pending = selectPendingCardTransactions(normalized, cardDebitCutoffs(normalized));
+
+  assert.deepEqual(normalizedDebit?.detailTransactions?.map(({ id }) => id), ["card:booked-paypal"]);
+  assert.equal(normalizedDebit?.detailTransactions?.reduce((total, tx) => total + tx.amount, 0), 101.3);
+  assert.deepEqual(pending.map(({ id }) => id), ["card:pending-spotify"]);
 });
 
 test("keeps a waived card fee in debit details without inflating the booked debit", () => {

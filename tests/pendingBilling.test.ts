@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { cardDebitCutoffs } from "../src/logic/flows";
 import {
+  pendingBillingDate,
   selectCardTransactionsInPendingDebits,
   selectPendingCardTransactions,
   summarizePendingBillingMonths,
@@ -111,6 +112,64 @@ test("future charges keep two legitimate identical booked purchases", () => {
 
   assert.deepEqual(result.map(({ id }) => id), ["first-booked", "second-booked"]);
   assert.equal(result.reduce((total, transaction) => total + transaction.amount, 0), 118);
+});
+
+test("a past provider-pending billing date moves to the card's known next cycle", () => {
+  const stale = tx({
+    id: "stale-pending",
+    date: "2026-08-11",
+    billingDate: "2026-08-11",
+    cardLast4: "5653",
+    status: "PENDING",
+  });
+  const nextCycle = tx({
+    id: "known-next-cycle",
+    billingDate: "2026-09-10",
+    cardLast4: "5653",
+    status: "BOOKED",
+  });
+
+  assert.equal(
+    pendingBillingDate(stale, [stale, nextCycle], cardDebitCutoffs([]), "2026-08-12"),
+    "2026-09-10"
+  );
+});
+
+test("a past provider-pending billing date rolls one cycle forward when no future date is known", () => {
+  const debit = tx({
+    id: "last-debit",
+    source: "bank",
+    date: "2026-08-10",
+    cardLast4: "5961",
+    categoryMain: "INCOMES_EXPENSES",
+    categorySub: "CREDIT_CARD_CHECKING",
+  });
+  const stale = tx({
+    id: "stale-pending",
+    date: "2026-08-11",
+    billingDate: "2026-08-11",
+    cardLast4: "5961",
+    status: "PENDING",
+  });
+
+  assert.equal(
+    pendingBillingDate(stale, [debit, stale], cardDebitCutoffs([debit]), "2026-08-12"),
+    "2026-09-10"
+  );
+});
+
+test("a future provider billing date remains in the current upcoming cycle", () => {
+  const future = tx({
+    id: "future-pending",
+    billingDate: "2026-08-16",
+    cardLast4: "9699",
+    status: "PENDING",
+  });
+
+  assert.equal(
+    pendingBillingDate(future, [future], cardDebitCutoffs([]), "2026-08-12"),
+    "2026-08-16"
+  );
 });
 
 test("transactions attached to a pending bank debit are clearing, not next-cycle charges", () => {

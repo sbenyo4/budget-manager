@@ -995,8 +995,12 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
 
     for (const tx of debits) {
       if (!tx.cardLast4) continue;
+      const txAmountCents = amountCents(tx.amount);
       const groupIndex = groups.findIndex(
-        (group, index) => !usedGroupIndexes.has(index) && group.details.some((detail) => detail.cardLast4 === tx.cardLast4)
+        (group, index) =>
+          !usedGroupIndexes.has(index) &&
+          group.totalCents === txAmountCents &&
+          group.details.some((detail) => detail.cardLast4 === tx.cardLast4)
       );
       if (groupIndex >= 0) {
         usedGroupIndexes.add(groupIndex);
@@ -1054,7 +1058,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     const debitDetailsById = new Map<string, DevPublicTransaction[]>();
 
     for (const tx of transactions) {
-      if (tx.source !== "card" || !tx.billingDate) continue;
+      if (tx.source !== "card" || !tx.billingDate || tx.status === "PENDING") continue;
       const groups = cardGroupsByBillingDate.get(tx.billingDate) ?? [];
       const key = `${tx.cardProvider ?? ""}:${tx.cardLast4 ?? ""}`;
       const {

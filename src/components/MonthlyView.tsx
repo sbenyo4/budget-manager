@@ -2,9 +2,10 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } fro
 import type { ReactNode } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
-import { cardDebitCutoffs, isCardDebit, isCardTransactionCharged, isConsumption } from "../logic/flows";
+import { cardDebitCutoffsWithFallback, isCardDebit, isCardTransactionCharged, isConsumption } from "../logic/flows";
 import { fixedExpenseKey, fixedExpenseKeysFor } from "../logic/expenseScope";
 import {
+  pendingBillingDate,
   selectCardTransactionsInPendingDebits,
   selectPendingCardTransactions,
   summarizePendingBillingMonths,
@@ -427,7 +428,7 @@ function fallbackCardDebitDetails(transactions: Transaction[]): Map<string, Tran
       debitsByDate.set(tx.date, debits);
     }
 
-    if (tx.source !== "card" || !tx.billingDate) continue;
+    if (tx.source !== "card" || !tx.billingDate || tx.status === "PENDING") continue;
     const groups = cardGroupsByBillingDate.get(tx.billingDate) ?? [];
     const key = `${tx.cardProvider ?? ""}:${tx.cardLast4 ?? ""}`;
     const group = groups.find(
@@ -449,7 +450,10 @@ function fallbackCardDebitDetails(transactions: Transaction[]): Map<string, Tran
     for (const tx of debits) {
       if (!tx.cardLast4) continue;
       const groupIndex = groups.findIndex(
-        (group, index) => !used.has(index) && group.details.some((detail) => detail.cardLast4 === tx.cardLast4)
+        (group, index) =>
+          !used.has(index) &&
+          Math.abs(group.totalCents - amountCents(tx.amount)) <= 1 &&
+          group.details.some((detail) => detail.cardLast4 === tx.cardLast4)
       );
       if (groupIndex >= 0) {
         used.add(groupIndex);
@@ -515,7 +519,10 @@ export function MonthlyView({
 
   // Card purchases after the last aggregate card debit haven't been charged
   // to the account yet — they're the upcoming bill
-  const debitCutoffs = useMemo(() => cardDebitCutoffs(categorizedTransactions), [categorizedTransactions]);
+  const debitCutoffs = useMemo(
+    () => cardDebitCutoffsWithFallback(categorizedTransactions, fallbackDebitDetails),
+    [categorizedTransactions, fallbackDebitDetails]
+  );
 
   const inPeriod = useMemo(
     () => categorizedTransactions.filter((tx) => tx.date >= periodFrom && tx.date <= periodTo),
@@ -613,6 +620,16 @@ export function MonthlyView({
     [clearingCard, installmentOverrides]
   );
   const inferredPendingBillingDates = useMemo(() => inferredBillingDates(pendingCard), [pendingCard]);
+  const resolvedPendingBillingDates = useMemo(() => {
+    const resolved = new Map<string, string>();
+    const today = todayIso();
+    for (const tx of pendingCard) {
+      const date = pendingBillingDate(tx, categorizedTransactions, debitCutoffs, today)
+        ?? inferredPendingBillingDates.get(tx.id);
+      if (date) resolved.set(tx.id, date);
+    }
+    return resolved;
+  }, [categorizedTransactions, debitCutoffs, inferredPendingBillingDates, pendingCard]);
   const pendingGroups = useMemo(() => {
     const groups = new Map<string, {
       billingDate?: string;
@@ -623,8 +640,7 @@ export function MonthlyView({
       pendingInstallmentCount: number;
     }>();
     for (const tx of pendingCard) {
-      const inferredBillingDate = inferredPendingBillingDates.get(tx.id);
-      const billingDate = tx.billingDate ?? inferredBillingDate;
+      const billingDate = resolvedPendingBillingDates.get(tx.id);
       const key = `${billingDate ?? "next"}::${tx.cardLast4 ?? ""}`;
       const group = groups.get(key) ?? {
         billingDate,
@@ -642,13 +658,13 @@ export function MonthlyView({
         group.total += tx.type === "income" ? -amount : amount;
       }
       group.transactions.push(tx);
-      if (inferredBillingDate) group.inferredCount += 1;
+      if (billingDate && billingDate !== tx.billingDate) group.inferredCount += 1;
       groups.set(key, group);
     }
     return [...groups.values()]
       .map((group) => ({ ...group, transactions: [...group.transactions].sort((a, b) => b.date.localeCompare(a.date)) }))
       .sort((a, b) => (a.billingDate ?? "9999-99-99").localeCompare(b.billingDate ?? "9999-99-99"));
-  }, [inferredPendingBillingDates, installmentOverrides, pendingCard]);
+  }, [installmentOverrides, pendingCard, resolvedPendingBillingDates]);
   const pendingBillingSummaries = useMemo(() => {
     const summaries = new Map<string, { billingDate?: string; total: number; count: number; pendingInstallmentCount: number }>();
     for (const group of pendingGroups) {
@@ -1165,7 +1181,7 @@ export function MonthlyView({
       {pendingDetailsOpen && (
         <section className="pending-card-detail" aria-label="פירוט חיובי אשראי פתוחים">
           <div className="pending-card-detail-header">
-            <h3>חיובים במחזור הבא</h3>
+            <h3>{selectedPendingMonthIsCurrent ? "חיובים במחזור הנוכחי" : "חיובים במחזור הבא"}</h3>
             <span>
               {pendingCard.length > 0
                 ? `${pendingCard.length} עסקאות · חיובים ידועים ${formatILS(pendingTotal)}${pendingInstallmentDetails.length > 0 ? ` · ${pendingInstallmentDetails.length} ממתינות לפירוט תשלומים` : ""}`

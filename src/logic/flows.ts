@@ -33,8 +33,20 @@ export function cardDebitCutoffs(transactions: Transaction[]): CardDebitCutoffs 
   return { latest, byLast4 };
 }
 
+export function cardDebitCutoffsWithFallback(
+  transactions: Transaction[],
+  fallbackDetailsByDebitId: ReadonlyMap<string, Transaction[]>
+): CardDebitCutoffs {
+  return cardDebitCutoffs(transactions.map((tx) => {
+    if (!isCardDebit(tx) || tx.detailTransactions?.length) return tx;
+    const details = fallbackDetailsByDebitId.get(tx.id);
+    return details?.length ? { ...tx, detailTransactions: details } : tx;
+  }));
+}
+
 export function isCardTransactionCharged(tx: Transaction, cutoffs: CardDebitCutoffs): boolean {
   if (tx.source !== "card") return true;
+  if (tx.status?.toUpperCase() === "PENDING") return false;
   const cutoff = tx.cardLast4 ? cutoffs.byLast4.get(tx.cardLast4) : cutoffs.latest;
   return Boolean(cutoff && (tx.billingDate ?? tx.date) <= cutoff);
 }

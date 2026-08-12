@@ -4,6 +4,7 @@ import type { Transaction } from "../src/types.ts";
 import {
   budgetDate,
   cardDebitCutoffs,
+  cardDebitCutoffsWithFallback,
   isCardTransactionCharged,
   isConsumption,
   isSavings,
@@ -62,6 +63,29 @@ test("an unmatched booked card debit does not hide unidentified card transaction
   assert.equal(isCardTransactionCharged(unidentifiedCardTransaction, cutoffs), false);
 });
 
+test("fallback debit details advance the cutoff for an API response without attached details", () => {
+  const debit = tx({
+    id: "debit",
+    source: "bank",
+    date: "2026-08-11",
+    categoryMain: "INCOMES_EXPENSES",
+    categorySub: "CREDIT_CARD_CHECKING",
+  });
+  const detail = tx({
+    id: "booked-detail",
+    source: "card",
+    date: "2026-08-06",
+    billingDate: "2026-08-11",
+    cardLast4: "5653",
+    status: "BOOKED",
+  });
+
+  const cutoffs = cardDebitCutoffsWithFallback([debit, detail], new Map([[debit.id, [detail]]]));
+
+  assert.equal(cutoffs.byLast4.get("5653"), "2026-08-11");
+  assert.equal(isCardTransactionCharged(detail, cutoffs), true);
+});
+
 test("small transfers and outgoing checks remain consumption", () => {
   assert.equal(isConsumption(tx({ categoryMain: "TRANSFER", amount: 250 })), true);
   assert.equal(isConsumption(tx({ categoryMain: "DEPOSIT", amount: 800 })), true);
@@ -91,4 +115,29 @@ test("card transactions use their billing date as the shared budget date", () =>
     "2026-07-10"
   );
   assert.equal(budgetDate(tx({ source: "bank", date: "2026-06-28", billingDate: "2026-07-10" })), "2026-06-28");
+});
+
+test("a provider-pending card purchase stays uncharged at the booked debit cutoff", () => {
+  const transactions = [
+    tx({
+      id: "debit",
+      source: "bank",
+      date: "2026-08-11",
+      cardLast4: "5653",
+      categoryMain: "INCOMES_EXPENSES",
+      categorySub: "CREDIT_CARD_CHECKING",
+      detailTransactions: [
+        tx({ id: "booked-detail", source: "card", billingDate: "2026-08-11", cardLast4: "5653", status: "BOOKED" }),
+      ],
+    }),
+  ];
+  const pending = tx({
+    id: "new-pending",
+    source: "card",
+    billingDate: "2026-08-11",
+    cardLast4: "5653",
+    status: "PENDING",
+  });
+
+  assert.equal(isCardTransactionCharged(pending, cardDebitCutoffs(transactions)), false);
 });
