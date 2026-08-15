@@ -5,6 +5,20 @@ export interface Transaction {
   date: string;
   /** Merchant / payee name as it appears on the account */
   merchant: string;
+  /** Contact details exposed by the provider, when available. */
+  merchantDetails?: {
+    displayName?: string;
+    address?: string;
+    phone?: string;
+    email?: string;
+    website?: string;
+    /** Direct customer-service/help page, when different from the main website. */
+    supportUrl?: string;
+    mapsUrl?: string;
+    /** Page that substantiates externally discovered contact details. */
+    sourceUrl?: string;
+    source?: "open_finance" | "google_places" | "anthropic_web_search" | "openstreetmap";
+  };
   /** Amount in ILS, always positive; direction is in `type` */
   amount: number;
   /** Provider lifecycle status, e.g. PENDING until the bank books the movement. */
@@ -15,6 +29,10 @@ export interface Transaction {
   cardLast4?: string;
   /** Card provider, e.g. isracard, when available. */
   cardProvider?: string;
+  /** Provider-side charge reference, worth quoting when disputing the transaction. */
+  providerReference?: string;
+  /** Raw MCC from the provider; used as a hint when resolving an opaque merchant descriptor. */
+  merchantCategoryCode?: string;
   /** Original full purchase amount for installment transactions. */
   originalAmount?: number;
   /** Installment position, if this card transaction is paid in installments. */

@@ -23,6 +23,7 @@ import { Donut, type DonutSlice } from "./Donut";
 import { formatILS, formatILSWhole, todayIso } from "./format";
 import { PowerIcon } from "./PowerIcon";
 import { transactionHighlightClass } from "./transactionHighlight";
+import { fetchMerchantDetails, type MerchantDetails } from "../api/merchantDetails";
 
 function OneTimeIcon() {
   return (
@@ -34,6 +35,135 @@ function OneTimeIcon() {
       <path d="M12 13v4" />
       <path d="M10.5 14.5 12 13l1.5 1.5" />
     </svg>
+  );
+}
+
+function safeWebsiteHref(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function phoneHref(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().replace(/(?!^\+)\D/g, "");
+  return normalized.replace(/\D/g, "").length >= 7 ? `tel:${normalized}` : undefined;
+}
+
+function emailHref(value: string | undefined): string | undefined {
+  if (!value || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return undefined;
+  return `mailto:${value}`;
+}
+
+function transactionStatusLabel(status: string | undefined): string {
+  if (status === "BOOKED") return "סופית";
+  if (status === "PENDING") return "טרם סופית";
+  return status || "לא נמסר";
+}
+
+interface MerchantLookupState {
+  loading: boolean;
+  details?: MerchantDetails | null;
+  error?: string;
+}
+
+function hasContactMethod(details: Transaction["merchantDetails"]): boolean {
+  return Boolean(details?.phone || details?.email || details?.supportUrl);
+}
+
+function TransactionDetailsPanel({
+  transaction,
+  lookup,
+  onLookup,
+}: {
+  transaction: Transaction;
+  lookup?: MerchantLookupState;
+  onLookup: () => void;
+}) {
+  // Look the merchant up as soon as the panel opens, so contact details are simply
+  // there — the same way the card issuer's own transaction page shows them.
+  const lookupRef = useRef(onLookup);
+  lookupRef.current = onLookup;
+  useEffect(() => {
+    lookupRef.current();
+  }, [transaction.id]);
+
+  const contact = lookup?.details
+    ? { ...lookup.details, ...transaction.merchantDetails, source: lookup.details.source }
+    : transaction.merchantDetails;
+  const website = safeWebsiteHref(contact?.website);
+  const supportUrl = safeWebsiteHref(contact?.supportUrl);
+  const sourceUrl = safeWebsiteHref(contact?.sourceUrl);
+  const phone = phoneHref(contact?.phone);
+  const email = emailHref(contact?.email);
+  const mapsUrl = safeWebsiteHref(contact?.mapsUrl)
+    ?? (contact?.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(contact.address)}` : undefined);
+  const transactionDate = new Date(`${transaction.date}T00:00:00`).toLocaleDateString("he-IL");
+  const billingDate = transaction.billingDate
+    ? new Date(`${transaction.billingDate}T00:00:00`).toLocaleDateString("he-IL")
+    : null;
+  const installment = installmentText(transaction);
+
+  return (
+    <div className="transaction-details-panel">
+      <div className="transaction-details-section">
+        <strong className="transaction-details-title">פרטי בית העסק</strong>
+        <dl className="transaction-details-list">
+          <div><dt>שם</dt><dd>{transaction.merchant}</dd></div>
+          {contact?.displayName && contact.displayName !== transaction.merchant && <div><dt>שם מזוהה</dt><dd>{contact.displayName}</dd></div>}
+          {contact?.address && <div><dt>כתובת</dt><dd>{contact.address}</dd></div>}
+          {contact?.phone && <div><dt>טלפון</dt><dd>{contact.phone}</dd></div>}
+          {contact?.email && <div><dt>דוא״ל</dt><dd>{contact.email}</dd></div>}
+          {contact?.website && <div><dt>אתר</dt><dd>{contact.website}</dd></div>}
+        </dl>
+        {lookup?.loading && <p className="transaction-details-empty" role="status">מחפש פרטי התקשרות לבית העסק…</p>}
+        {lookup?.error && (
+          <p className="transaction-details-empty">
+            לא ניתן היה להשלים כרגע את חיפוש פרטי ההתקשרות.{" "}
+            <button type="button" className="merchant-lookup-retry" onClick={onLookup}>נסה שוב</button>
+          </p>
+        )}
+        {lookup && !lookup.loading && !lookup.error && !hasContactMethod(contact) && (
+          <p className="transaction-details-empty">לא נמצאו פרטי התקשרות מאומתים לבית העסק.</p>
+        )}
+        <div className="transaction-details-actions" aria-label="פעולות ליצירת קשר עם בית העסק">
+          {phone && <a href={phone}>חיוג</a>}
+          {email && <a href={email}>שליחת דוא״ל</a>}
+          {supportUrl && <a href={supportUrl} target="_blank" rel="noreferrer">פתיחת עמוד תמיכה</a>}
+          {website && <a href={website} target="_blank" rel="noreferrer">פתיחת האתר</a>}
+          {mapsUrl && <a href={mapsUrl} target="_blank" rel="noreferrer">ניווט במפות</a>}
+        </div>
+        {contact?.source === "openstreetmap" && (
+          <p className="transaction-details-attribution">
+            מידע עסקי: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a>
+          </p>
+        )}
+        {contact?.source === "google_places" && <p className="transaction-details-attribution">מידע עסקי: Google Places</p>}
+        {contact?.source === "anthropic_web_search" && (
+          <p className="transaction-details-attribution">
+            מידע שאותר ברשת{sourceUrl ? <>: <a href={sourceUrl} target="_blank" rel="noreferrer">מקור לפרטי ההתקשרות</a></> : ""}
+          </p>
+        )}
+      </div>
+      <div className="transaction-details-section">
+        <strong className="transaction-details-title">פרטי העסקה</strong>
+        <dl className="transaction-details-list compact">
+          <div><dt>תאריך עסקה</dt><dd>{transactionDate}</dd></div>
+          {billingDate && <div><dt>מועד חיוב</dt><dd>{billingDate}</dd></div>}
+          <div><dt>מקור</dt><dd>{transaction.source === "card" ? "כרטיס אשראי" : "חשבון בנק"}</dd></div>
+          {transaction.cardProvider && <div><dt>ספק</dt><dd>{transaction.cardProvider}</dd></div>}
+          {transaction.cardLast4 && <div><dt>כרטיס</dt><dd>מסתיים ב־{transaction.cardLast4}</dd></div>}
+          <div><dt>סטטוס</dt><dd>{transactionStatusLabel(transaction.status)}</dd></div>
+          {transaction.providerReference && <div><dt>אסמכתה</dt><dd>{transaction.providerReference}</dd></div>}
+          {installment && <div><dt>תשלומים</dt><dd>{installment}</dd></div>}
+          <div><dt>קטגוריה</dt><dd>{categoryLabel(transaction.categoryMain)}{displaySubLabel(transaction.categorySub) ? ` · ${displaySubLabel(transaction.categorySub)}` : ""}</dd></div>
+        </dl>
+      </div>
+    </div>
   );
 }
 
@@ -491,6 +621,9 @@ export function MonthlyView({
   const [cardFilter, setCardFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedDebitId, setExpandedDebitId] = useState<string | null>(null);
+  const [expandedTransactionId, setExpandedTransactionId] = useState<string | null>(null);
+  const [merchantLookups, setMerchantLookups] = useState<Record<string, MerchantLookupState>>({});
+  const merchantLookupStarted = useRef(new Set<string>());
   const [excludedCategories, setExcludedCategories] = useState<Set<string>>(() => new Set());
   const [excludedTransactionIds, setExcludedTransactionIds] = useState<Set<string>>(() => new Set());
   const [pendingDetailsOpen, setPendingDetailsOpen] = useState(false);
@@ -508,6 +641,23 @@ export function MonthlyView({
     (tx: Transaction) => sectionOverrides[overrideKey(tx.categoryMain, merchantKey(tx))] ?? tx.categoryMain,
     [sectionOverrides]
   );
+  const loadMerchantDetails = useCallback((transaction: Transaction) => {
+    if (hasContactMethod(transaction.merchantDetails) || merchantLookupStarted.current.has(transaction.id)) return;
+    merchantLookupStarted.current.add(transaction.id);
+    setMerchantLookups((current) => ({ ...current, [transaction.id]: { loading: true } }));
+    fetchMerchantDetails(transaction.merchant, transaction.merchantDetails?.address, transaction.merchantCategoryCode)
+      .then((details) => {
+        setMerchantLookups((current) => ({ ...current, [transaction.id]: { loading: false, details } }));
+      })
+      .catch((error: unknown) => {
+        // Drop the guard so the retry button can start a fresh attempt.
+        merchantLookupStarted.current.delete(transaction.id);
+        setMerchantLookups((current) => ({
+          ...current,
+          [transaction.id]: { loading: false, error: error instanceof Error ? error.message : String(error) },
+        }));
+      });
+  }, []);
 
   const period = useMemo(() => {
     if (periodKey) return periods.find((p) => p.key === periodKey) ?? periods[0];
@@ -1023,6 +1173,7 @@ export function MonthlyView({
             setCardFilter("");
             setSearchQuery("");
             setExpandedDebitId(null);
+            setExpandedTransactionId(null);
           }}
         >
           {periods.map((p) => (
@@ -1494,6 +1645,8 @@ export function MonthlyView({
                 const isExpandedBySearch = canExpandDebit && detailMatchesSearch(debitDetails, normalizedSearchQuery, effectiveCategoryMain);
                 const isExpanded = expandedDebitId === tx.id || isExpandedBySearch;
                 const toggleDebitDetails = () => setExpandedDebitId(isExpanded ? null : tx.id);
+                const canExpandTransactionDetails = !isCardDebit(tx) || Boolean(singleDebitDetail);
+                const isTransactionDetailsExpanded = expandedTransactionId === displayTx.id;
                 const cardSummary =
                   isCardDebit(tx) || displayTx.source === "card" ? cardDigitsSummary(displayTx, debitDetails) : null;
                 const sourceLabel = cardSummary ?? (tx.source === "card" ? "אשראי" : "");
@@ -1569,6 +1722,20 @@ export function MonthlyView({
                       <span className="sub-label"> · לא נמצא פירוט תואם בדיווח חברת האשראי</span>
                     )}
                       </span>
+                    {canExpandTransactionDetails && (
+                      <button
+                        type="button"
+                        className="transaction-details-toggle"
+                        aria-label={isTransactionDetailsExpanded ? "סגירת פרטי העסקה ובית העסק" : "פתיחת פרטי העסקה ובית העסק"}
+                        aria-expanded={isTransactionDetailsExpanded}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setExpandedTransactionId(isTransactionDetailsExpanded ? null : displayTx.id);
+                        }}
+                      >
+                        <span aria-hidden="true">i</span>
+                      </button>
+                    )}
                     {isReportedPending && (
                       <span className="pending-chip" title="ספק הנתונים החזיר סטטוס PENDING; אין בכך ודאות שהחיוב טרם בוצע">
                         ⏳ טרם סופי
@@ -1643,6 +1810,17 @@ export function MonthlyView({
                     {displayTx.type === "income" ? "+" : "−"}{highlightSearchText(formatILS(displayTx.amount), visibleSearchQuery)}
                   </td>
                 </tr>
+                {canExpandTransactionDetails && isTransactionDetailsExpanded && (
+                  <tr className="transaction-details-row">
+                    <td colSpan={5}>
+                      <TransactionDetailsPanel
+                        transaction={displayTx}
+                        lookup={merchantLookups[displayTx.id]}
+                        onLookup={() => loadMerchantDetails(displayTx)}
+                      />
+                    </td>
+                  </tr>
+                )}
                 {canExpandDebit && isExpanded && (
                   <tr className="debit-detail-row">
                     <td colSpan={5}>
@@ -1660,6 +1838,7 @@ export function MonthlyView({
                           const detailCard = cardDigitsText(detail);
                           const detailSubLabel = displaySubLabel(detail.categorySub);
                           const detailAmount = formatILS(detail.amount);
+                          const isDetailInformationExpanded = expandedTransactionId === detail.id;
                           return (
                             <li key={detail.id} className={`debit-detail-item ${isDetailTransactionExcluded ? "excluded-transaction" : ""}`}>
                               <span className="debit-detail-date">
@@ -1683,6 +1862,17 @@ export function MonthlyView({
                                   <PowerIcon />
                                 </button>
                                 <span className="debit-detail-merchant-text">{highlightSearchText(detail.merchant, visibleSearchQuery)}</span>
+                                <button
+                                  type="button"
+                                  className="transaction-details-toggle compact"
+                                  aria-label={isDetailInformationExpanded ? "סגירת פרטי העסקה ובית העסק" : "פתיחת פרטי העסקה ובית העסק"}
+                                  aria-expanded={isDetailInformationExpanded}
+                                  onClick={() => {
+                                    setExpandedTransactionId(isDetailInformationExpanded ? null : detail.id);
+                                  }}
+                                >
+                                  <span aria-hidden="true">i</span>
+                                </button>
                               </span>
                               <span className="debit-detail-category">
                                 <span className="cat-current compact">
@@ -1741,6 +1931,13 @@ export function MonthlyView({
                                 />
                               </span>
                               <span className="debit-detail-amount">{highlightSearchText(detailAmount, visibleSearchQuery)}</span>
+                              {isDetailInformationExpanded && (
+                                <TransactionDetailsPanel
+                                  transaction={detail}
+                                  lookup={merchantLookups[detail.id]}
+                                  onLookup={() => loadMerchantDetails(detail)}
+                                />
+                              )}
                             </li>
                           );
                         })}

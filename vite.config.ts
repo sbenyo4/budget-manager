@@ -15,6 +15,8 @@ import { fetchWithTimeout } from "./server/fetchWithTimeout";
 import { normalizePreferences, normalizePreferencesPatch } from "./server/preferences";
 import { isValidAIAnalysisPayload } from "./server/aiPayload";
 import { normalizeCategoryOverrideInput } from "./server/categoryOverride";
+import { lookupMerchantDetails } from "./server/merchantLookup";
+import { merchantDetails } from "./server/openFinance";
 
 /**
  * Server-side proxy for the open-finance.ai API.
@@ -89,6 +91,24 @@ interface RawTransaction {
   };
   description?: { description?: string; additionalInfo?: string };
   merchantName?: string;
+  merchant?: {
+    address?: string;
+    phone?: string;
+    phoneNumber?: string;
+    email?: string;
+    website?: string;
+    url?: string;
+  };
+  merchantAddress?: {
+    streetName?: string;
+    buildingNumber?: string | number;
+    townName?: string;
+    postCode?: string | number;
+    postalCode?: string | number;
+    country?: string;
+  };
+  categoryCode?: string;
+  transactionProviderIdentifier?: string;
   category?: { main?: string; sub?: string };
   status?: string;
   details?: string;
@@ -271,6 +291,11 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (user_id, cache_key)
     );
+    CREATE TABLE IF NOT EXISTS merchant_lookup_cache (
+      lookup_key TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
   const sessionColumns = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
   const sessionColumnNames = new Set(sessionColumns.map((column) => column.name));
@@ -353,6 +378,16 @@ function preferencesAuth(env: Record<string, string>): Plugin {
         ORDER BY updated_at DESC
         LIMIT 200
       )
+  `);
+  const getMerchantLookupCache = db.prepare(`
+    SELECT data
+    FROM merchant_lookup_cache
+    WHERE lookup_key = ? AND updated_at >= datetime('now', '-30 days')
+  `);
+  const upsertMerchantLookupCache = db.prepare(`
+    INSERT INTO merchant_lookup_cache (lookup_key, data, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(lookup_key) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP
   `);
   const localRateLimits = new Map<string, { windowStart: number; count: number }>();
 
@@ -439,6 +474,49 @@ function preferencesAuth(env: Record<string, string>): Plugin {
       const token = bearerToken(req);
       if (token) deleteSession.run(tokenHash(token));
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (url.pathname === "/api/transactions" && url.searchParams.has("merchantLookup") && req.method === "GET") {
+      const user = currentUnlockedUser(req);
+      if (!user) {
+        sendJson(res, 401, { error: "PIN_REQUIRED" });
+        return;
+      }
+      const merchant = url.searchParams.get("merchantLookup")?.replace(/\s+/g, " ").trim() ?? "";
+      const address = url.searchParams.get("merchantAddress")?.replace(/\s+/g, " ").trim() || undefined;
+      const categoryCode = url.searchParams.get("merchantCategoryCode")?.replace(/\s+/g, " ").trim() || undefined;
+      if (!merchant || merchant.length > 160 || (address?.length ?? 0) > 240 || (categoryCode?.length ?? 0) > 16) {
+        sendJson(res, 400, { error: "INVALID_MERCHANT" });
+        return;
+      }
+      const key = createHash("sha256")
+        .update(`v3\n${merchant.toLocaleLowerCase("he")}\n${address?.toLocaleLowerCase("he") ?? ""}\n${categoryCode ?? ""}`)
+        .digest("hex");
+      const cached = getMerchantLookupCache.get(key) as { data: string } | undefined;
+      if (cached) {
+        sendJson(res, 200, { ...JSON.parse(cached.data), cached: true });
+        return;
+      }
+      const rateLimit = consumeLocalRateLimit(user.id, "merchant-lookup", 60, 60 * 60 * 1000);
+      if (!rateLimit.allowed) {
+        res.setHeader("Retry-After", String(rateLimit.retryAfterSeconds));
+        sendJson(res, 429, { error: "MERCHANT_LOOKUP_RATE_LIMITED", retryAfterSeconds: rateLimit.retryAfterSeconds });
+        return;
+      }
+      const settingsRow = getServiceSettings.get(user.id) as { data: string } | undefined;
+      const settings = settingsRow ? normalizeServiceSettings(JSON.parse(settingsRow.data)) : EMPTY_SERVICE_SETTINGS;
+      lookupMerchantDetails(merchant, address, {
+        ...(settings.aiProvider === "anthropic" ? { anthropicApiKey: settings.aiApiKey } : {}),
+        anthropicModel: settings.aiModel,
+        ...(categoryCode ? { categoryCode } : {}),
+      })
+        .then((details) => {
+          const value = { details };
+          upsertMerchantLookupCache.run(key, JSON.stringify(value));
+          sendJson(res, 200, { ...value, cached: false });
+        })
+        .catch((error: unknown) => sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) }));
       return;
     }
 
@@ -823,6 +901,16 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     return finiteAmount(raw.amount?.originalAmount?.amount);
   }
 
+  function safeMerchantDetail(value: unknown, maxLength: number): string | undefined {
+    if (typeof value !== "string") return undefined;
+    const normalized = value.replace(/\s+/g, " ").trim();
+    return normalized && normalized.length <= maxLength ? normalized : undefined;
+  }
+
+  // `merchantDetails` is imported from server/openFinance.ts rather than
+  // reimplemented here: the duplicate copy meant every merchant-detail fix
+  // applied to production only and never showed up in local development.
+
   function isCardInstallment(raw: RawTransaction): boolean {
     return Boolean(raw.isCreditCardInstallment || raw.installments || raw.details?.trim() === "תשלומים");
   }
@@ -918,6 +1006,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
           ...(monthlyAmountPending ? { monthlyAmountPending: true } : {}),
         }
       : undefined;
+    const contactDetails = merchantDetails(raw);
 
     return {
       id: raw.id ? `${source}:${raw.id}` : `${source}-tx-${index}`,
@@ -928,7 +1017,10 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
       ...(billingDate ? { billingDate } : {}),
       ...(last4 ? { cardLast4: last4 } : {}),
       ...(raw.providerId ? { cardProvider: raw.providerId } : {}),
+      ...(safeMerchantDetail(raw.transactionProviderIdentifier, 64) ? { providerReference: safeMerchantDetail(raw.transactionProviderIdentifier, 64) } : {}),
+      ...(safeMerchantDetail(raw.categoryCode, 16) ? { merchantCategoryCode: safeMerchantDetail(raw.categoryCode, 16) } : {}),
       merchant: raw.merchantName || raw.description?.description || "לא ידוע",
+      ...(contactDetails ? { merchantDetails: contactDetails } : {}),
       amount: Math.abs(amount),
       ...(raw.status ? { status: raw.status.toUpperCase() } : {}),
       ...(originalAmount !== undefined && (Math.abs(originalAmount) !== Math.abs(amount) || monthlyAmountPending)
@@ -1227,7 +1319,9 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
 
 export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  const configuredApiOrigin = env.BUDGET_API_ORIGIN?.trim();
+  // A process-level override lets developers explicitly run the local API even
+  // when .env.local normally points every /api request at production.
+  const configuredApiOrigin = process.env.BUDGET_API_ORIGIN?.trim() || env.BUDGET_API_ORIGIN?.trim();
   const remoteApiOrigin = configuredApiOrigin && configuredApiOrigin.toLowerCase() !== "local"
     ? configuredApiOrigin.replace(/\/$/, "")
     : "";

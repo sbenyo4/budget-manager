@@ -2627,6 +2627,142 @@ h1 {
   border-color: var(--text-muted);
 }
 
+.transaction-details-toggle {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font: 650 0.78rem/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.transaction-details-toggle:hover,
+.transaction-details-toggle[aria-expanded="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--control-wash);
+}
+
+.transaction-details-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.transaction-details-toggle.compact {
+  width: 21px;
+  height: 21px;
+  font-size: 0.72rem;
+}
+
+.transaction-details-row td {
+  padding: 0 14px 12px;
+  background: var(--control-wash);
+}
+
+.transaction-details-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  padding: 14px 16px;
+  color: var(--text-secondary);
+  background: var(--surface-1);
+  border: 1px solid var(--gridline);
+  border-radius: 10px;
+  font-size: 0.82rem;
+}
+
+.debit-detail-item > .transaction-details-panel {
+  grid-column: 1 / -1;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 2px;
+}
+
+.transaction-details-section {
+  min-width: 0;
+}
+
+.transaction-details-title {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+  font-size: 0.86rem;
+}
+
+.transaction-details-list {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+}
+
+.transaction-details-list > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.transaction-details-list dt {
+  color: var(--text-muted);
+}
+
+.transaction-details-list dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.transaction-details-empty {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+}
+
+.transaction-details-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.transaction-details-actions a {
+  padding: 5px 9px;
+  color: var(--text-primary);
+  text-decoration: none;
+  background: var(--control-wash);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.transaction-details-actions a:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.transaction-details-attribution {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.transaction-details-attribution a {
+  color: inherit;
+}
+
+.merchant-lookup-retry {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .debit-detail-row td {
   background: var(--control-wash);
   padding: 12px 16px;

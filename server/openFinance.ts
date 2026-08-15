@@ -32,6 +32,28 @@ export interface RawTransaction {
   };
   description?: { description?: string; additionalInfo?: string };
   merchantName?: string;
+  merchant?: {
+    address?: string;
+    phone?: string;
+    phoneNumber?: string;
+    email?: string;
+    website?: string;
+    url?: string;
+  };
+  merchantAddress?: {
+    streetName?: string;
+    /** Numeric in part of the live data, so accept both shapes. */
+    buildingNumber?: string | number;
+    townName?: string;
+    /** The provider alternates between `postCode` and `postalCode`, and between string and number. */
+    postCode?: string | number;
+    postalCode?: string | number;
+    country?: string;
+  };
+  /** Merchant category code (MCC) behind `category`, e.g. "5411" for groceries. */
+  categoryCode?: string;
+  /** Provider-side reference for the charge, useful when disputing it. */
+  transactionProviderIdentifier?: string;
   category?: { main?: string; sub?: string };
   status?: string;
   details?: string;
@@ -48,7 +70,20 @@ interface NormalizedTransaction {
   billingDate?: string;
   cardLast4?: string;
   cardProvider?: string;
+  /** Provider-side charge reference, quoted when disputing the transaction. */
+  providerReference?: string;
+  /** Raw MCC behind `category`; the strongest hint for identifying opaque descriptors. */
+  merchantCategoryCode?: string;
   merchant: string;
+  merchantDetails?: {
+    displayName?: string;
+    address?: string;
+    phone?: string;
+    email?: string;
+    website?: string;
+    mapsUrl?: string;
+    source?: "open_finance" | "google_places" | "openstreetmap";
+  };
   amount: number;
   status?: string;
   originalAmount?: number;
@@ -64,6 +99,83 @@ interface NormalizedTransaction {
 }
 
 type PublicTransaction = Omit<NormalizedTransaction, "duplicateKey" | "pendingInvestmentDuplicateKey">;
+
+type MerchantDetails = NonNullable<NormalizedTransaction["merchantDetails"]>;
+
+const MERCHANT_DETAIL_KEYS = {
+  address: ["merchantaddress", "businessaddress", "address", "location"],
+  phone: ["merchantphone", "businessphone", "phonenumber", "telephone", "phone"],
+  email: ["merchantemail", "businessemail", "emailaddress", "email"],
+  website: ["merchantwebsite", "businesswebsite", "websiteurl", "website", "url"],
+} as const;
+
+function normalizedInfoKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function additionalInfoStrings(value: unknown, depth = 0): Array<[string, string]> {
+  if (!value || typeof value !== "object" || depth > 3) return [];
+  const entries: Array<[string, string]> = [];
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof nested === "string" && nested.trim()) entries.push([normalizedInfoKey(key), nested.trim()]);
+    else entries.push(...additionalInfoStrings(nested, depth + 1));
+  }
+  return entries;
+}
+
+function safeDetail(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized && normalized.length <= maxLength ? normalized : undefined;
+}
+
+/** `ZZ` is the provider's placeholder for an unknown country. */
+function addressCountry(country: string | undefined): string | undefined {
+  const normalized = country?.trim().toUpperCase();
+  if (!normalized || !/^[A-Z]{2}$/.test(normalized)) return undefined;
+  // IL is the user's own country, so naming it only adds noise to every local charge.
+  return normalized === "ZZ" || normalized === "IL" ? undefined : normalized;
+}
+
+function addressPart(value: string | number | undefined): string | undefined {
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : undefined;
+  const normalized = value?.replace(/\s+/g, " ").trim();
+  return normalized || undefined;
+}
+
+function formattedMerchantAddress(raw: RawTransaction): string | undefined {
+  const address = raw.merchantAddress;
+  if (!address) return undefined;
+  const streetName = addressPart(address.streetName);
+  const buildingNumber = addressPart(address.buildingNumber);
+  // Some records already carry the number inside the street name ("רובינשטיין יצחק 20").
+  const street = buildingNumber && streetName && !new RegExp(`(^|\\s)${buildingNumber}(\\s|$)`).test(streetName)
+    ? `${streetName} ${buildingNumber}`
+    : streetName ?? buildingNumber;
+  const parts = [street, addressPart(address.townName), addressCountry(address.country)].filter(Boolean);
+  return parts.length ? safeDetail(parts.join(", "), 240) : undefined;
+}
+
+/**
+ * Shared with the dev-server plugin in `vite.config.ts`, which previously kept
+ * its own copy — so a fix here silently missed local development entirely.
+ */
+export function merchantDetails(raw: RawTransaction): MerchantDetails | undefined {
+  let info: unknown;
+  try {
+    info = raw.description?.additionalInfo ? JSON.parse(raw.description.additionalInfo) : undefined;
+  } catch {
+    info = undefined;
+  }
+  const entries = additionalInfoStrings(info);
+  const fromInfo = (keys: readonly string[]) => entries.find(([key]) => keys.includes(key))?.[1];
+  const address = formattedMerchantAddress(raw) ?? safeDetail(raw.merchant?.address ?? fromInfo(MERCHANT_DETAIL_KEYS.address), 240);
+  const phone = safeDetail(raw.merchant?.phone ?? raw.merchant?.phoneNumber ?? fromInfo(MERCHANT_DETAIL_KEYS.phone), 40);
+  const email = safeDetail(raw.merchant?.email ?? fromInfo(MERCHANT_DETAIL_KEYS.email), 160);
+  const website = safeDetail(raw.merchant?.website ?? raw.merchant?.url ?? fromInfo(MERCHANT_DETAIL_KEYS.website), 300);
+  const details = { ...(address ? { address } : {}), ...(phone ? { phone } : {}), ...(email ? { email } : {}), ...(website ? { website } : {}), source: "open_finance" as const };
+  return Object.keys(details).length ? details : undefined;
+}
 
 const tokens = new Map<string, { value: string; expiresAt: number }>();
 const pendingTokens = new Map<string, Promise<string>>();
@@ -391,6 +503,7 @@ export function normalizeOpenFinanceTransaction(
         ...(monthlyAmountPending ? { monthlyAmountPending: true } : {}),
       }
     : undefined;
+  const contactDetails = merchantDetails(raw);
 
   return {
     id: raw.id ? `${source}:${raw.id}` : `${source}-tx-${index}`,
@@ -401,7 +514,10 @@ export function normalizeOpenFinanceTransaction(
     ...(billingDate ? { billingDate } : {}),
     ...(last4 ? { cardLast4: last4 } : {}),
     ...(raw.providerId ? { cardProvider: raw.providerId } : {}),
+    ...(safeDetail(raw.transactionProviderIdentifier, 64) ? { providerReference: safeDetail(raw.transactionProviderIdentifier, 64) } : {}),
+    ...(safeDetail(raw.categoryCode, 16) ? { merchantCategoryCode: safeDetail(raw.categoryCode, 16) } : {}),
     merchant: raw.merchantName || raw.description?.description || "לא ידוע",
+    ...(contactDetails ? { merchantDetails: contactDetails } : {}),
     amount: Math.abs(amount),
     ...(raw.status ? { status: raw.status.toUpperCase() } : {}),
     ...(originalAmount !== undefined && (Math.abs(originalAmount) !== Math.abs(amount) || monthlyAmountPending)

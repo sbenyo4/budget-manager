@@ -136,6 +136,13 @@ export function ensureSchema(): Promise<void> {
         PRIMARY KEY (user_id, action)
       )
         `,
+        db`
+        CREATE TABLE IF NOT EXISTS merchant_lookup_cache (
+          lookup_key TEXT PRIMARY KEY,
+          data JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        `,
       ]);
       await Promise.all([
         db`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pin_unlocked_at BIGINT`,
@@ -541,6 +548,35 @@ export async function upsertAIAnalysisCache<T = unknown>(
       )
   `;
   return updatedAt instanceof Date ? updatedAt.toISOString() : String(updatedAt ?? new Date().toISOString());
+}
+
+export async function getMerchantLookupCache<T = unknown>(
+  lookupKey: string,
+  maxAgeMs: number,
+  now = Date.now()
+): Promise<T | undefined> {
+  await ensureSchema();
+  const rows = (await sql()`
+    SELECT data, updated_at AS "updatedAt"
+    FROM merchant_lookup_cache
+    WHERE lookup_key = ${lookupKey}
+    LIMIT 1
+  `) as Array<{ data: T; updatedAt: Date | string }>;
+  const row = rows[0];
+  if (!row) return undefined;
+  const updatedAt = row.updatedAt instanceof Date ? row.updatedAt.getTime() : new Date(row.updatedAt).getTime();
+  return Number.isFinite(updatedAt) && now - updatedAt <= maxAgeMs ? row.data : undefined;
+}
+
+export async function upsertMerchantLookupCache<T>(lookupKey: string, data: T): Promise<void> {
+  await ensureSchema();
+  await sql()`
+    INSERT INTO merchant_lookup_cache (lookup_key, data, updated_at)
+    VALUES (${lookupKey}, ${JSON.stringify(data)}::jsonb, NOW())
+    ON CONFLICT (lookup_key) DO UPDATE SET
+      data = EXCLUDED.data,
+      updated_at = NOW()
+  `;
 }
 
 export async function getPinCredential(userId: string): Promise<{ salt: string; pinHash: string } | null> {

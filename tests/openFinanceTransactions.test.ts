@@ -57,6 +57,119 @@ test("keeps a provider-supplied installment amount and position", () => {
   assert.equal(normalized.originalAmount, 1300);
 });
 
+test("exposes only recognized merchant contact fields from provider metadata", () => {
+  const normalized = normalizeOpenFinanceTransaction(
+    baseCardTransaction({
+      description: {
+        description: "merchant charge",
+        additionalInfo: JSON.stringify({
+          merchant: {
+            businessAddress: "1 Rothschild Blvd, Tel Aviv",
+            phoneNumber: "+972-3-555-0101",
+            email: "service@example.com",
+            websiteUrl: "https://example.com",
+          },
+          accountNo: "must-not-be-exposed",
+        }),
+      },
+    }),
+    0,
+    "card"
+  );
+
+  assert.deepEqual(normalized.merchantDetails, {
+    address: "1 Rothschild Blvd, Tel Aviv",
+    phone: "+972-3-555-0101",
+    email: "service@example.com",
+    website: "https://example.com",
+    source: "open_finance",
+  });
+  assert.equal(JSON.stringify(normalized).includes("must-not-be-exposed"), false);
+});
+
+test("maps the documented structured merchantAddress returned by Open Finance", () => {
+  const normalized = normalizeOpenFinanceTransaction(
+    baseCardTransaction({
+      merchantAddress: {
+        streetName: "רוטשילד",
+        buildingNumber: "1",
+        townName: "תל אביב-יפו",
+        postCode: "6688101",
+        country: "IL",
+      },
+    }),
+    0,
+    "card"
+  );
+
+  assert.deepEqual(normalized.merchantDetails, {
+    address: "רוטשילד 1, תל אביב-יפו",
+    source: "open_finance",
+  });
+});
+
+test("accepts the numeric postCode/buildingNumber shapes the live API returns", () => {
+  const normalized = normalizeOpenFinanceTransaction(
+    baseCardTransaction({
+      merchantAddress: {
+        streetName: "דרך השלום",
+        buildingNumber: 10,
+        townName: "תל אביב - יפ",
+        postCode: 6789212,
+        country: "IL",
+      },
+    }),
+    0,
+    "card"
+  );
+
+  assert.equal(normalized.merchantDetails?.address, "דרך השלום 10, תל אביב - יפ");
+});
+
+test("does not repeat a building number already present in the street name", () => {
+  const normalized = normalizeOpenFinanceTransaction(
+    baseCardTransaction({
+      merchantAddress: {
+        streetName: "רובינשטיין יצחק 20",
+        buildingNumber: "20",
+        townName: "תל אביב - יפו",
+        postCode: 6821241,
+        country: "IL",
+      },
+    }),
+    0,
+    "card"
+  );
+
+  assert.equal(normalized.merchantDetails?.address, "רובינשטיין יצחק 20, תל אביב - יפו");
+});
+
+test("keeps a foreign country but drops the ZZ unknown-country placeholder", () => {
+  const foreign = normalizeOpenFinanceTransaction(
+    baseCardTransaction({ merchantAddress: { townName: "MADRID", country: "ES" } }),
+    0,
+    "card"
+  );
+  const unknown = normalizeOpenFinanceTransaction(
+    baseCardTransaction({ merchantAddress: { townName: "STOCKHOLM    ", country: "ZZ" } }),
+    0,
+    "card"
+  );
+
+  assert.equal(foreign.merchantDetails?.address, "MADRID, ES");
+  assert.equal(unknown.merchantDetails?.address, "STOCKHOLM");
+});
+
+test("exposes the provider charge reference for disputing a transaction", () => {
+  const normalized = normalizeOpenFinanceTransaction(
+    baseCardTransaction({ transactionProviderIdentifier: "100826891103958" }),
+    0,
+    "card"
+  );
+
+  assert.equal(normalized.providerReference, "100826891103958");
+});
+
 function pendingInvestment(id: string, amount: number): RawTransaction {
   return {
     id,
