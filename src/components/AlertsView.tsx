@@ -182,8 +182,15 @@ export function AlertsView({
                 <p>{alert.description}</p>
                 {alert.previousAmount !== undefined && (
                   <div className="alert-comparison" aria-label="השוואת סכומים">
+                    {alert.previousMonthAmount !== undefined && (
+                      <span>חודש קודם: {formatILS(alert.previousMonthAmount)}</span>
+                    )}
                     <span>
-                      {isBalanceAlert ? "סף שהוגדר" : "בסיס קודם"}: {formatILS(alert.previousAmount)}
+                      {isBalanceAlert
+                        ? "סף שהוגדר"
+                        : alert.previousMonthAmount !== undefined
+                          ? "בסיס חציוני"
+                          : "בסיס קודם"}: {formatILS(alert.previousAmount)}
                     </span>
                     <span aria-hidden>←</span>
                     <strong>

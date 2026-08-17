@@ -604,7 +604,10 @@ export function applyCategoryOverrides(transactions: Transaction[], overrides: S
       learnedMatch.category;
     const recurring = tx.recurring || isKnownRecurringMerchant(merchant) || learnedMatch.recurring;
     const detailTransactions = tx.detailTransactions?.map(applyToTransaction);
-    const categoryChanged = Boolean(target) && (tx.categoryMain !== target || tx.categorySub !== "USER_DEFINED");
+    // Keep a provider subtype when classification agrees with its main
+    // category. Replacing MORTGAGE/UTILITIES/etc. with USER_DEFINED here
+    // removes the signal that downstream alert rules depend on.
+    const categoryChanged = Boolean(target) && tx.categoryMain !== target;
     const recurringChanged = Boolean(recurring) && tx.recurring !== true;
     const detailsChanged = Boolean(
       detailTransactions && tx.detailTransactions?.some((detail, index) => detailTransactions[index] !== detail)

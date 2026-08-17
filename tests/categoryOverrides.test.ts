@@ -75,6 +75,23 @@ test("default merchant rules and recurring flags retain their existing output", 
   assert.equal(result.recurring, true);
 });
 
+test("an agreeing category rule preserves the provider subtype", () => {
+  const mortgage = transaction(
+    "mortgage",
+    "פועלים-משכנתא",
+    "LOAN_TRANSACTION",
+    "MORTGAGE"
+  );
+  const [result] = applyCategoryOverrides(
+    [mortgage],
+    { "פועלים-משכנתא": "LOAN_TRANSACTION" }
+  );
+
+  assert.equal(result, mortgage);
+  assert.equal(result.categoryMain, "LOAN_TRANSACTION");
+  assert.equal(result.categorySub, "MORTGAGE");
+});
+
 test("category overrides are applied recursively to card debit details", () => {
   const detail = transaction("detail", "Detail Merchant");
   const aggregate: Transaction = {

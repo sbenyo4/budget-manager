@@ -22,6 +22,7 @@ export interface TransactionAlert {
   date: string;
   amount: number;
   previousAmount?: number;
+  previousMonthAmount?: number;
   increasePercent?: number;
   title: string;
   description: string;
@@ -260,11 +261,12 @@ function recurringAlerts(
         date: currentDate,
         amount: roundedAmount,
         previousAmount: roundAmount(baseline),
+        previousMonthAmount: roundAmount(previousMonthAmount),
         increasePercent: Math.round(increasePercent),
         title: variableService ? "עלייה חריגה בשירות קבוע" : "מחיר שירות חוזר עלה",
         description: variableService
-          ? `החיוב החודשי גבוה ב-${Math.round(increasePercent)}% מהבסיס הקודם.`
-          : `המחיר עלה מ-${roundAmount(baseline)} ₪ ל-${roundedAmount} ₪.`,
+          ? "חריגה לעומת הבסיס החציוני."
+          : "החיוב עלה לעומת החודש הקודם.",
         transactionIds: current.transactions.map((tx) => tx.id),
       });
     }

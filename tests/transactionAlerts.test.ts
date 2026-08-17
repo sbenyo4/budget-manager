@@ -6,6 +6,7 @@ import {
   mergeAlertApprovals,
   type TransactionAlert,
 } from "../src/logic/transactionAlerts.ts";
+import { applyCategoryOverrides } from "../src/logic/categoryOverrides.ts";
 import type { Transaction } from "../src/types.ts";
 
 function expense(id: string, date: string, merchant: string, amount: number, extra: Partial<Transaction> = {}): Transaction {
@@ -115,7 +116,7 @@ test("detects a meaningful mortgage payment increase", () => {
       categorySub: "MORTGAGE",
     });
 
-  const alerts = detectTransactionAlerts(
+  const learnedTransactions = applyCategoryOverrides(
     [
       mortgage("mortgage-feb", "2026-02-15", 3_651.71),
       mortgage("mortgage-mar", "2026-03-15", 3_646.69),
@@ -124,7 +125,17 @@ test("detects a meaningful mortgage payment increase", () => {
       mortgage("mortgage-jun", "2026-06-15", 3_676.8),
       mortgage("mortgage-jul", "2026-07-15", 3_671.78),
       mortgage("mortgage-aug", "2026-08-16", 3_809.56),
+      expense("future-card", "2026-08-17", "Future card purchase", 100, {
+        source: "card",
+        billingDate: "2026-09-15",
+        categoryMain: "FOOD_&_DRINKS",
+        categorySub: "RESTAURANT",
+      }),
     ],
+    { "פועלים-משכנתא": "LOAN_TRANSACTION" }
+  );
+  const alerts = detectTransactionAlerts(
+    learnedTransactions,
     { highAmountThreshold: 5_000 }
   );
 
@@ -132,6 +143,7 @@ test("detects a meaningful mortgage payment increase", () => {
   assert.equal(alerts[0].kind, "price_increase");
   assert.equal(alerts[0].merchant, "פועלים-משכנתא");
   assert.equal(alerts[0].amount, 3_809.56);
+  assert.equal(alerts[0].previousMonthAmount, 3_671.78);
   assert.equal(alerts[0].previousAmount, 3_654.22);
   assert.equal(alerts[0].increasePercent, 4);
 });
