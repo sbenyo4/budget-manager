@@ -33,6 +33,7 @@ const SUB_LABELS: Record<string, string> = {
   MORTGAGE: "משכנתא",
   CHQ_INCOME: "שיק",
   REFUND: "זיכוי",
+  CARD_FEES: "דמי כרטיס",
 };
 
 export function mainLabel(main: string): string {

@@ -3632,3 +3632,20 @@ h1 {
     font-size: 0.6rem;
   }
 }
+.not-charged-amount {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.not-charged-amount strong {
+  color: var(--text-primary);
+}
+
+.not-charged-amount small {
+  font-size: 0.72rem;
+  font-weight: 500;
+}

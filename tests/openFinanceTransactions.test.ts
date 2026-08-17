@@ -529,6 +529,11 @@ test("keeps a waived card fee in debit details without inflating the booked debi
     100
   );
   assert.equal(normalizedDebit?.detailTransactions?.find((tx) => tx.id === "card:waived-fee")?.amount, 0);
+  const normalizedFee = normalizedDebit?.detailTransactions?.find((tx) => tx.id === "card:waived-fee");
+  assert.equal(normalizedFee?.notCharged, true);
+  assert.equal(normalizedFee?.originalAmount, 17.9);
+  assert.equal(normalizedFee?.categoryMain, "INCOMES_EXPENSES");
+  assert.equal(normalizedFee?.categorySub, "CARD_FEES");
 });
 
 test("client fallback removes a fee-less pending investment returned by an older API", () => {

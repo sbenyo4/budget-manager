@@ -35,6 +35,8 @@ export interface Transaction {
   merchantCategoryCode?: string;
   /** Original full purchase amount for installment transactions. */
   originalAmount?: number;
+  /** The provider supplied an explicit blank charged amount, so no money was collected. */
+  notCharged?: boolean;
   /** Installment position, if this card transaction is paid in installments. */
   installment?: {
     number?: number;

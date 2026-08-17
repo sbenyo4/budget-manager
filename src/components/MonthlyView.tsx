@@ -41,7 +41,8 @@ function OneTimeIcon() {
 function safeWebsiteHref(value: string | undefined): string | undefined {
   if (!value) return undefined;
   try {
-    const url = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    const cleaned = value.trim().replace(/^\/+((?:https?):\/\/)/i, "$1");
+    const url = new URL(/^https?:\/\//i.test(cleaned) ? cleaned : `https://${cleaned}`);
     return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : undefined;
   } catch {
     return undefined;
@@ -73,6 +74,10 @@ interface MerchantLookupState {
 
 function hasContactMethod(details: Transaction["merchantDetails"]): boolean {
   return Boolean(details?.phone || details?.email || details?.supportUrl);
+}
+
+function isUnchargedCardFee(transaction: Transaction): boolean {
+  return Boolean(transaction.notCharged && transaction.categorySub === "CARD_FEES");
 }
 
 function TransactionDetailsPanel({
@@ -107,18 +112,19 @@ function TransactionDetailsPanel({
     ? new Date(`${transaction.billingDate}T00:00:00`).toLocaleDateString("he-IL")
     : null;
   const installment = installmentText(transaction);
+  const unchargedCardFee = isUnchargedCardFee(transaction);
 
   return (
     <div className="transaction-details-panel">
       <div className="transaction-details-section">
-        <strong className="transaction-details-title">פרטי בית העסק</strong>
+        <strong className="transaction-details-title">{unchargedCardFee ? "פרטי מנפיק הכרטיס" : "פרטי בית העסק"}</strong>
         <dl className="transaction-details-list">
           <div><dt>שם</dt><dd>{transaction.merchant}</dd></div>
           {contact?.displayName && contact.displayName !== transaction.merchant && <div><dt>שם מזוהה</dt><dd>{contact.displayName}</dd></div>}
           {contact?.address && <div><dt>כתובת</dt><dd>{contact.address}</dd></div>}
           {contact?.phone && <div><dt>טלפון</dt><dd>{contact.phone}</dd></div>}
           {contact?.email && <div><dt>דוא״ל</dt><dd>{contact.email}</dd></div>}
-          {contact?.website && <div><dt>אתר</dt><dd>{contact.website}</dd></div>}
+          {website && <div><dt>אתר</dt><dd>{website}</dd></div>}
         </dl>
         {lookup?.loading && <p className="transaction-details-empty" role="status">מחפש פרטי התקשרות לבית העסק…</p>}
         {lookup?.error && (
@@ -158,7 +164,9 @@ function TransactionDetailsPanel({
           {transaction.cardProvider && <div><dt>ספק</dt><dd>{transaction.cardProvider}</dd></div>}
           {transaction.cardLast4 && <div><dt>כרטיס</dt><dd>מסתיים ב־{transaction.cardLast4}</dd></div>}
           <div><dt>סטטוס</dt><dd>{transactionStatusLabel(transaction.status)}</dd></div>
-          {transaction.providerReference && <div><dt>אסמכתה</dt><dd>{transaction.providerReference}</dd></div>}
+          {transaction.notCharged && <div><dt>חיוב בפועל</dt><dd>לא חויב</dd></div>}
+          {transaction.notCharged && transaction.originalAmount !== undefined && <div><dt>סכום מקורי</dt><dd>{formatILS(transaction.originalAmount)} — ניתן פטור / החיוב אופס</dd></div>}
+          {transaction.providerReference && <div><dt>מזהה עסקה אצל הספק</dt><dd>{transaction.providerReference}</dd></div>}
           {installment && <div><dt>תשלומים</dt><dd>{installment}</dd></div>}
           <div><dt>קטגוריה</dt><dd>{categoryLabel(transaction.categoryMain)}{displaySubLabel(transaction.categorySub) ? ` · ${displaySubLabel(transaction.categorySub)}` : ""}</dd></div>
         </dl>
@@ -1807,7 +1815,12 @@ export function MonthlyView({
                     {sourceLabel && <span className={`source-chip ${sourceClass}`}>{highlightSearchText(sourceLabel, visibleSearchQuery)}</span>}
                   </td>
                   <td className={`num ${displayTx.type === "income" ? "net-positive" : ""}`}>
-                    {displayTx.type === "income" ? "+" : "−"}{highlightSearchText(formatILS(displayTx.amount), visibleSearchQuery)}
+                    {displayTx.notCharged ? (
+                      <span className="not-charged-amount">
+                        <strong>לא חויב</strong>
+                        {displayTx.originalAmount !== undefined && <small>עמלה מקורית {formatILS(displayTx.originalAmount)}</small>}
+                      </span>
+                    ) : <>{displayTx.type === "income" ? "+" : "−"}{highlightSearchText(formatILS(displayTx.amount), visibleSearchQuery)}</>}
                   </td>
                 </tr>
                 {canExpandTransactionDetails && isTransactionDetailsExpanded && (
@@ -1837,7 +1850,7 @@ export function MonthlyView({
                           const isDetailTransactionExcluded = excludedTransactionIds.has(detail.id);
                           const detailCard = cardDigitsText(detail);
                           const detailSubLabel = displaySubLabel(detail.categorySub);
-                          const detailAmount = formatILS(detail.amount);
+                          const detailAmount = detail.notCharged ? "לא חויב" : formatILS(detail.amount);
                           const isDetailInformationExpanded = expandedTransactionId === detail.id;
                           return (
                             <li key={detail.id} className={`debit-detail-item ${isDetailTransactionExcluded ? "excluded-transaction" : ""}`}>
@@ -1930,7 +1943,10 @@ export function MonthlyView({
                                   onChange={categorizeMerchant}
                                 />
                               </span>
-                              <span className="debit-detail-amount">{highlightSearchText(detailAmount, visibleSearchQuery)}</span>
+                              <span className={`debit-detail-amount ${detail.notCharged ? "not-charged-amount" : ""}`}>
+                                <strong>{highlightSearchText(detailAmount, visibleSearchQuery)}</strong>
+                                {detail.notCharged && detail.originalAmount !== undefined && <small>עמלה מקורית {formatILS(detail.originalAmount)}</small>}
+                              </span>
                               {isDetailInformationExpanded && (
                                 <TransactionDetailsPanel
                                   transaction={detail}

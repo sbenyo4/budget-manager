@@ -87,6 +87,7 @@ interface NormalizedTransaction {
   amount: number;
   status?: string;
   originalAmount?: number;
+  notCharged?: boolean;
   installment?: {
     number?: number;
     total?: number;
@@ -282,6 +283,19 @@ function rawOriginalAmount(raw: RawTransaction): number | undefined {
   return finiteAmount(raw.amount?.originalAmount?.amount);
 }
 
+function hasBlankChargedAmount(raw: RawTransaction): boolean {
+  const value = raw.amount?.chargedAmount?.amount;
+  return typeof value === "string" && value.trim() === "";
+}
+
+function isCardFee(raw: RawTransaction): boolean {
+  const descriptor = [raw.merchantName, raw.description?.description, raw.details]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return /דמי\s*(?:כרטיס|אשראי|הנפקה)|(?:card|issuance)\s*fee|fee\s*(?:for\s*)?(?:card|issuance)/iu.test(descriptor);
+}
+
 function normalizeDate(value: string): string {
   return value.slice(0, 10);
 }
@@ -425,6 +439,7 @@ function richerCardRecord(a: NormalizedTransaction, b: NormalizedTransaction): N
     ...(preferred.originalAmount !== undefined || fallback.originalAmount === undefined
       ? {}
       : { originalAmount: fallback.originalAmount }),
+    ...(preferred.notCharged || !fallback.notCharged ? {} : { notCharged: true }),
     ...(preferred.installment || !fallback.installment ? {} : { installment: fallback.installment }),
   };
 }
@@ -494,6 +509,8 @@ export function normalizeOpenFinanceTransaction(
   const billingDate = source === "card" && raw.date?.valueDate ? normalizeDate(raw.date.valueDate) : undefined;
   const amount = rawAmount(raw);
   const originalAmount = rawOriginalAmount(raw);
+  const notCharged = hasBlankChargedAmount(raw) && originalAmount !== undefined && Math.abs(originalAmount) > 0;
+  const waivedCardFee = source === "card" && notCharged && isCardFee(raw);
   const last4 = cardLast4(raw, source);
   const monthlyAmountPending = isMonthlyInstallmentAmountPending(raw);
   const installment = isCardInstallment(raw)
@@ -523,10 +540,11 @@ export function normalizeOpenFinanceTransaction(
     ...(originalAmount !== undefined && (Math.abs(originalAmount) !== Math.abs(amount) || monthlyAmountPending)
       ? { originalAmount: Math.abs(originalAmount) }
       : {}),
+    ...(notCharged ? { notCharged: true } : {}),
     ...(installment ? { installment } : {}),
     type: amount > 0 ? "income" : "expense",
-    categoryMain: raw.category?.main ?? "OTHER",
-    categorySub: raw.category?.sub ?? "UNCATEGORIZED",
+    categoryMain: waivedCardFee ? "INCOMES_EXPENSES" : raw.category?.main ?? "OTHER",
+    categorySub: waivedCardFee ? "CARD_FEES" : raw.category?.sub ?? "UNCATEGORIZED",
   };
 }
 
