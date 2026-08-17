@@ -95,9 +95,11 @@ const SERVICE_SUBCATEGORIES = new Set([
   "RENT",
   "FEES",
   "LOANS",
+  "MORTGAGE",
   "HEALTHCARE",
 ]);
 const VARIABLE_SERVICE_SUBCATEGORIES = new Set(["UTILITIES"]);
+const SENSITIVE_RECURRING_SUBCATEGORIES = new Set(["MORTGAGE"]);
 const DAY_MS = 86_400_000;
 
 function roundAmount(value: number): number {
@@ -234,8 +236,15 @@ function recurringAlerts(
       const variableService = current.transactions.some((tx) =>
         VARIABLE_SERVICE_SUBCATEGORIES.has(tx.categorySub)
       );
-      const minPercent = approvedBaseline > 0 ? (variableService ? 5 : 0.1) : variableService ? 25 : explicitlyRecurring ? 10 : 40;
-      const minDelta = approvedBaseline > 0 ? (variableService ? 10 : 0.01) : variableService ? 40 : explicitlyRecurring ? 5 : 150;
+      const sensitiveRecurring = current.transactions.some((tx) =>
+        SENSITIVE_RECURRING_SUBCATEGORIES.has(tx.categorySub)
+      );
+      const minPercent = approvedBaseline > 0
+        ? variableService ? 5 : 0.1
+        : variableService ? 25 : sensitiveRecurring ? 2 : explicitlyRecurring ? 10 : 40;
+      const minDelta = approvedBaseline > 0
+        ? variableService ? 10 : 0.01
+        : variableService ? 40 : sensitiveRecurring ? 50 : explicitlyRecurring ? 5 : 150;
       const delta = current.amount - baseline;
       const increasePercent = (delta / baseline) * 100;
       if (delta < minDelta || increasePercent < minPercent) continue;

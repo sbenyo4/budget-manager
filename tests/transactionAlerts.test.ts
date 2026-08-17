@@ -108,6 +108,34 @@ test("detects a significant utility spike", () => {
   assert.equal(alerts[0].kind, "monthly_spike");
 });
 
+test("detects a meaningful mortgage payment increase", () => {
+  const mortgage = (id: string, date: string, amount: number) =>
+    expense(id, date, "פועלים-משכנתא", amount, {
+      categoryMain: "LOAN_TRANSACTION",
+      categorySub: "MORTGAGE",
+    });
+
+  const alerts = detectTransactionAlerts(
+    [
+      mortgage("mortgage-feb", "2026-02-15", 3_651.71),
+      mortgage("mortgage-mar", "2026-03-15", 3_646.69),
+      mortgage("mortgage-apr", "2026-04-15", 3_650.04),
+      mortgage("mortgage-may", "2026-05-15", 3_656.73),
+      mortgage("mortgage-jun", "2026-06-15", 3_676.8),
+      mortgage("mortgage-jul", "2026-07-15", 3_671.78),
+      mortgage("mortgage-aug", "2026-08-16", 3_809.56),
+    ],
+    { highAmountThreshold: 5_000 }
+  );
+
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].kind, "price_increase");
+  assert.equal(alerts[0].merchant, "פועלים-משכנתא");
+  assert.equal(alerts[0].amount, 3_809.56);
+  assert.equal(alerts[0].previousAmount, 3_654.22);
+  assert.equal(alerts[0].increasePercent, 4);
+});
+
 test("detects and remembers approval for a high transaction", () => {
   const tx = expense("large-1", "2026-07-10", "חנות רהיטים", 7_500, {
     categoryMain: "SHOPPING",
