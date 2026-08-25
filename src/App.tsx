@@ -29,6 +29,7 @@ import { AlertsView } from "./components/AlertsView";
 import { PerformanceProfiler } from "./components/PerformanceProfiler";
 import { useAutoLogout } from "./hooks/useAutoLogout";
 import { markPerformanceInteraction } from "./logic/performanceMetrics";
+import { futureDataEndIso } from "./logic/dateRange";
 import {
   detectHighCheckingBalanceAlert,
   detectTransactionAlerts,
@@ -96,11 +97,6 @@ function isoDaysAgo(days: number): string {
   const now = new Date();
   const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() - days));
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-}
-
-function endOfCurrentYear(): string {
-  const year = new Date().getFullYear();
-  return `${year}-12-31`;
 }
 
 function normalizePin(value: string): string {
@@ -318,8 +314,8 @@ function BudgetApp() {
     setLoading(true);
     setError(null);
     setServiceSettingsRequired(false);
-    // One wide fetch feeds both views: ~13 months back for salary-period history
-    fetchBudgetData(isoDaysAgo(400), endOfCurrentYear(), controller.signal)
+    // One wide fetch feeds both views: ~13 months back plus 18 full months ahead
+    fetchBudgetData(isoDaysAgo(400), futureDataEndIso(), controller.signal)
       .then(({ transactions: txs, demo, bankBalance: nextBankBalance }) => {
         if (cancelled) return;
         setAllTransactions(txs);

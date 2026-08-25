@@ -869,30 +869,9 @@ export function MonthlyView({
       setPendingMonthFilter(null);
     }
   }, [pendingMonthFilter, pendingMonthlySummaries]);
-  const currentMonthKey = todayIso().slice(0, 7);
-  const selectedPendingMonth = useMemo(() => {
-    const dated = pendingBillingSummaries.filter((summary) => summary.billingDate);
-    const currentMonth = dated.filter((summary) => summary.billingDate?.slice(0, 7) === currentMonthKey);
-    const selectedMonthKey = currentMonth.length > 0
-      ? currentMonthKey
-      : dated.find((summary) => (summary.billingDate?.slice(0, 7) ?? "") > currentMonthKey)?.billingDate?.slice(0, 7);
-    const selected = selectedMonthKey
-      ? dated.filter((summary) => summary.billingDate?.slice(0, 7) === selectedMonthKey)
-      : pendingBillingSummaries.filter((summary) => !summary.billingDate);
-    return {
-      monthKey: selectedMonthKey,
-      billingDates: selected.flatMap((summary) => summary.billingDate ? [summary.billingDate] : []),
-      total: selected.reduce((total, summary) => total + summary.total, 0),
-      count: selected.reduce((count, summary) => count + summary.count, 0),
-      pendingInstallmentCount: selected.reduce(
-        (count, summary) => count + summary.pendingInstallmentCount,
-        0
-      ),
-    };
-  }, [currentMonthKey, pendingBillingSummaries]);
-  const selectedPendingChargeTotal = selectedPendingMonth.total;
-  const pendingTotalDiffersFromSelected = Math.abs(pendingTotal - selectedPendingChargeTotal) >= 0.005;
-  const selectedPendingMonthIsCurrent = selectedPendingMonth.monthKey === currentMonthKey;
+  const pendingMonthlyBreakdown = pendingMonthlySummaries
+    .map((summary) => `${summary.monthKey ? formatMonthLabel(summary.monthKey) : "מועד חיוב לא ידוע"}: ${formatILS(summary.total)}`)
+    .join(" · ");
 
   // Category breakdown: replace the aggregate card debits with the card's
   // own transactions (incl. pending ones — they're real consumption)
@@ -1316,22 +1295,16 @@ export function MonthlyView({
           onClick={() => setPendingDetailsOpen((open) => !open)}
           aria-expanded={pendingDetailsOpen}
         >
-          <span className="stat-label">
-            {selectedPendingMonthIsCurrent ? "חיובים במחזור הנוכחי ⏳" : "חיובים במחזור הבא ⏳"}
-          </span>
-          <span className="stat-value">{formatILSWhole(selectedPendingChargeTotal)}</span>
+          <span className="stat-label">חיובים עתידיים מאושרים ⏳</span>
+          <span className="stat-value">{formatILS(pendingTotal)}</span>
           <span className="stat-hint">
             {confirmedPendingCard.length === 0
               ? "אין חיובים מאושרים"
-              : selectedPendingMonth.billingDates.length > 0
-                ? `ירד ב-${selectedPendingMonth.billingDates.map(formatShortDate).join(", ")}`
-                : "בחיוב הבא"}
+              : `${confirmedPendingCard.length} עסקאות שטרם חויבו בחשבון`}
           </span>
-          {confirmedPendingCard.length > 0 && pendingTotalDiffersFromSelected && (
+          {pendingMonthlyBreakdown && (
             <span className="stat-hint pending-next-charge">
-              <span>
-                סה"כ כל החיובים המאושרים: {formatILS(pendingTotal)} ({confirmedPendingCard.length})
-              </span>
+              <span>{pendingMonthlyBreakdown}</span>
             </span>
           )}
           {providerPendingCard.length > 0 && (
@@ -1356,7 +1329,7 @@ export function MonthlyView({
       {pendingDetailsOpen && (
         <section className="pending-card-detail" aria-label="פירוט חיובי אשראי פתוחים">
           <div className="pending-card-detail-header">
-            <h3>{selectedPendingMonthIsCurrent ? "חיובים במחזור הנוכחי" : "חיובים במחזור הבא"}</h3>
+            <h3>חיובים עתידיים מאושרים</h3>
             <span>
               {confirmedPendingCard.length > 0
                 ? `${confirmedPendingCard.length} עסקאות מאושרות · חיובים ידועים ${formatILS(pendingTotal)}${pendingInstallmentDetails.length > 0 ? ` · ${pendingInstallmentDetails.length} ממתינות לפירוט תשלומים` : ""}`
