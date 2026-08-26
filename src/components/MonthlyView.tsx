@@ -189,6 +189,21 @@ export function transactionForDisplayedDebitDetails(tx: Transaction, debitDetail
   return isCardDebit(tx) && debitDetails.length === 1 ? debitDetails[0] : tx;
 }
 
+export function sortTransactionsByDisplayedDate(
+  transactions: Transaction[],
+  debitDetailsFor: (tx: Transaction) => Transaction[] = (tx) => tx.detailTransactions ?? []
+): Transaction[] {
+  return [...transactions].sort((a, b) => {
+    const displayedA = transactionForDisplayedDebitDetails(a, debitDetailsFor(a));
+    const displayedB = transactionForDisplayedDebitDetails(b, debitDetailsFor(b));
+    return (
+      displayedB.date.localeCompare(displayedA.date) ||
+      b.date.localeCompare(a.date) ||
+      a.id.localeCompare(b.id)
+    );
+  });
+}
+
 function sliceByMain(txs: Transaction[], categoryFor: (tx: Transaction) => string = (tx) => tx.categoryMain): DonutSlice[] {
   const totals = new Map<string, number>();
   for (const tx of txs) {
@@ -1019,17 +1034,10 @@ export function MonthlyView({
   const selectCategoryFilter = useCallback((key: string) => {
     setCategoryFilter((current) => (current === key ? null : key));
   }, []);
-  const listed = useMemo(
-    () =>
-      categoryListed
-        .filter(txMatchesVisibleSearch),
-    [categoryListed, txMatchesVisibleSearch]
-  );
-  const debitDetailsByTransactionId = useMemo(() => {
-    const detailsById = new Map<string, { all: Transaction[]; visible: Transaction[] }>();
-    for (const tx of listed) {
+  const visibleDebitDetailsFor = useCallback(
+    (tx: Transaction) => {
       const all = tx.detailTransactions?.length ? tx.detailTransactions : fallbackDebitDetails.get(tx.id) ?? [];
-      const visible = all.filter((detail) => {
+      return all.filter((detail) => {
         if (categoryFilter && effectiveCategoryMain(detail) !== categoryFilter) return false;
         if (!isInExpenseScope(detail, expenseScope, fixedExpenseKeys)) return false;
         if (cardFilter && !matchesCardFilter(detail, cardFilter)) return false;
@@ -1038,18 +1046,33 @@ export function MonthlyView({
         }
         return true;
       });
+    },
+    [
+      cardFilter,
+      categoryFilter,
+      effectiveCategoryMain,
+      expenseScope,
+      fallbackDebitDetails,
+      fixedExpenseKeys,
+      normalizedSearchQuery,
+    ]
+  );
+  const listed = useMemo(
+    () => sortTransactionsByDisplayedDate(categoryListed.filter(txMatchesVisibleSearch), visibleDebitDetailsFor),
+    [categoryListed, txMatchesVisibleSearch, visibleDebitDetailsFor]
+  );
+  const debitDetailsByTransactionId = useMemo(() => {
+    const detailsById = new Map<string, { all: Transaction[]; visible: Transaction[] }>();
+    for (const tx of listed) {
+      const all = tx.detailTransactions?.length ? tx.detailTransactions : fallbackDebitDetails.get(tx.id) ?? [];
+      const visible = visibleDebitDetailsFor(tx);
       detailsById.set(tx.id, { all, visible });
     }
     return detailsById;
   }, [
-    cardFilter,
-    categoryFilter,
-    effectiveCategoryMain,
-    expenseScope,
     fallbackDebitDetails,
-    fixedExpenseKeys,
     listed,
-    normalizedSearchQuery,
+    visibleDebitDetailsFor,
   ]);
   const categoryExpenseGroups = useMemo<CategoryExpenseGroup[]>(() => {
     if (!categoryFilter) return [];
