@@ -1351,6 +1351,48 @@ export function MonthlyView({
         </button>
       </div>
 
+      {bankBalance && pendingAccountAdjustment !== null && Math.abs(pendingAccountAdjustment) >= 0.005 && (
+        <section className="balance-reconciliation" aria-labelledby="balance-reconciliation-title">
+          <div className="balance-reconciliation-header">
+            <div>
+              <span className="balance-reconciliation-eyebrow">תנועה שטרם נרשמה בטבלת החשבון</span>
+              <h2 id="balance-reconciliation-title">התאמת יתרת הבנק</h2>
+            </div>
+            <span className="pending-badge">ממתינה</span>
+          </div>
+          <div className="balance-reconciliation-flow">
+            <div className="balance-reconciliation-step">
+              <span>יתרה רשומה</span>
+              <strong>{formatILS(bankBalance.bookedBalance ?? bankBalance.balance)}</strong>
+              {bankBalance.bookedDate && <small>ל־{bankBalance.bookedDate.slice(8, 10)}.{bankBalance.bookedDate.slice(5, 7)}</small>}
+            </div>
+            <span className="balance-reconciliation-operator" aria-hidden>+</span>
+            <div className="balance-reconciliation-step pending-movement">
+              <span>
+                {reflectedPendingTransactions.length === 1
+                  ? reflectedPendingTransactions[0].merchant
+                  : "תנועות ממתינות"}
+              </span>
+              <strong>{formatILS(pendingAccountAdjustment)}</strong>
+              {reflectedPendingTransactions.length === 1 && (
+                <small>
+                  תאריך ערך {reflectedPendingTransactions[0].date.slice(8, 10)}.{reflectedPendingTransactions[0].date.slice(5, 7)}
+                </small>
+              )}
+            </div>
+            <span className="balance-reconciliation-operator" aria-hidden>=</span>
+            <div className="balance-reconciliation-step expected-balance">
+              <span>יתרה צפויה</span>
+              <strong>{formatILS(bankBalance.balance)}</strong>
+              <small>ל־{bankBalance.date.slice(8, 10)}.{bankBalance.date.slice(5, 7)}</small>
+            </div>
+          </div>
+          <p className="balance-reconciliation-note">
+            התנועה הממתינה כבר מגולמת ביתרה הצפויה, אך אינה נספרת עדיין בתנועות הרשומות או בתזרים התקופה.
+          </p>
+        </section>
+      )}
+
       {pendingDetailsOpen && (
         <section className="pending-card-detail" aria-label="פירוט חיובי אשראי פתוחים">
           <div className="pending-card-detail-header">
@@ -1514,7 +1556,7 @@ export function MonthlyView({
       <section className="period-detail">
         <div className="detail-header">
           <h2>
-            {categoryFilter ? "תנועות בקטגוריה" : cardFilter ? "עסקאות בכרטיס" : "תנועות חשבון בפועל"}
+            {categoryFilter ? "תנועות בקטגוריה" : cardFilter ? "עסקאות בכרטיס" : "תנועות רשומות בחשבון"}
             {categoryFilter && <span className="filter-tag"> · {categoryLabel(categoryFilter)}</span>}
             {cardFilter && <span className="filter-tag"> · כרטיס {cardFilter}</span>}
             {hasActiveSearch && <span className="filter-tag"> · "{visibleSearchQuery}"</span>}

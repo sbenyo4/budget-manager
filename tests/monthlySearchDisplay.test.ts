@@ -84,3 +84,10 @@ test("aggregate debits with multiple displayed details stay sorted by their debi
 
   assert.deepEqual(sorted.map((tx) => tx.id), ["card-debit", "bank-transfer"]);
 });
+
+test("a pending movement reflected in the bank balance gets a prominent reconciliation panel", () => {
+  assert.match(monthlyViewSource, /id="balance-reconciliation-title">התאמת יתרת הבנק/);
+  assert.match(monthlyViewSource, /reflectedPendingTransactions\[0\]\.merchant/);
+  assert.match(monthlyViewSource, /formatILS\(pendingAccountAdjustment\)/);
+  assert.match(monthlyViewSource, /תנועה שטרם נרשמה בטבלת החשבון/);
+});

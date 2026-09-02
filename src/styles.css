@@ -570,6 +570,97 @@ h1 {
   color: var(--text-muted);
 }
 
+.balance-reconciliation {
+  margin: -4px 0 20px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in srgb, var(--securities-line) 55%, var(--border));
+  border-radius: 14px;
+  background: var(--securities-wash);
+}
+
+.balance-reconciliation-header,
+.balance-reconciliation-flow {
+  display: flex;
+  align-items: center;
+}
+
+.balance-reconciliation-header {
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.balance-reconciliation-header h2 {
+  margin: 2px 0 0;
+  font-size: 1.08rem;
+}
+
+.balance-reconciliation-eyebrow {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.pending-badge {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid var(--securities-line);
+  border-radius: 999px;
+  color: var(--text-primary);
+  background: var(--surface-1);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.balance-reconciliation-flow {
+  gap: 14px;
+}
+
+.balance-reconciliation-step {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+  display: grid;
+  gap: 2px;
+}
+
+.balance-reconciliation-step > span,
+.balance-reconciliation-step > small {
+  color: var(--text-secondary);
+}
+
+.balance-reconciliation-step > strong {
+  font-size: 1.2rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.balance-reconciliation-step.pending-movement {
+  border-color: var(--securities-line);
+}
+
+.balance-reconciliation-step.pending-movement > strong {
+  color: var(--avoid);
+}
+
+.balance-reconciliation-step.expected-balance > strong {
+  color: var(--good);
+}
+
+.balance-reconciliation-operator {
+  flex: 0 0 auto;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.balance-reconciliation-note {
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
 .pending-stat-tile {
   position: relative;
   color: inherit;
@@ -577,6 +668,19 @@ h1 {
   text-align: start;
   cursor: pointer;
   padding-inline-end: 48px;
+}
+
+@media (max-width: 760px) {
+  .balance-reconciliation-flow {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .balance-reconciliation-operator {
+    align-self: center;
+    line-height: 1;
+  }
 }
 
 .pending-stat-tile:hover,
