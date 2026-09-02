@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { sortTransactionsByDisplayedDate, transactionForDisplayedDebitDetails } from "../src/components/MonthlyView";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { emptyPreferences } from "../src/api/preferences";
+import {
+  MonthlyView,
+  accountMovementsForDisplay,
+  sortTransactionsByDisplayedDate,
+  transactionForDisplayedDebitDetails,
+} from "../src/components/MonthlyView";
 import type { Transaction } from "../src/types";
 
 const monthlyViewSource = readFileSync(new URL("../src/components/MonthlyView.tsx", import.meta.url), "utf8");
@@ -85,9 +93,45 @@ test("aggregate debits with multiple displayed details stay sorted by their debi
   assert.deepEqual(sorted.map((tx) => tx.id), ["card-debit", "bank-transfer"]);
 });
 
-test("a pending movement reflected in the bank balance gets a prominent reconciliation panel", () => {
-  assert.match(monthlyViewSource, /id="balance-reconciliation-title">התאמת יתרת הבנק/);
-  assert.match(monthlyViewSource, /reflectedPendingTransactions\[0\]\.merchant/);
-  assert.match(monthlyViewSource, /formatILS\(pendingAccountAdjustment\)/);
-  assert.match(monthlyViewSource, /תנועה שטרם נרשמה בטבלת החשבון/);
+test("a pending bank movement reflected in the balance is appended to the existing table only", () => {
+  const pendingMovement: Transaction = {
+    ...aggregateDebit,
+    id: "pending-securities",
+    date: "2026-09-03",
+    merchant: "ני\"ע-קניה",
+    amount: 19_999.01,
+    status: "PENDING",
+  };
+
+  assert.deepEqual(
+    accountMovementsForDisplay([aggregateDebit], [pendingMovement]).map((transaction) => transaction.id),
+    [aggregateDebit.id, pendingMovement.id]
+  );
+  assert.equal(accountMovementsForDisplay([pendingMovement], [pendingMovement]).length, 1);
+  assert.doesNotMatch(monthlyViewSource, /balance-reconciliation-title/);
+  assert.match(monthlyViewSource, /אירוע עתידי · ממתינה/);
+  assert.match(monthlyViewSource, /pending-bank-row/);
+});
+
+test("the incident renders as a marked future row without changing the booked period totals", () => {
+  const incidentTransactions: Transaction[] = [
+    { ...aggregateDebit, categorySub: "OTHER", id: "salary", date: "2026-08-31", merchant: "משכורת", amount: 31_040.18, type: "income", status: "BOOKED" },
+    { ...aggregateDebit, categorySub: "OTHER", id: "fee-1", date: "2026-09-01", merchant: "עמלה", amount: 6.75, type: "expense", status: "BOOKED" },
+    { ...aggregateDebit, categorySub: "OTHER", id: "fee-2", date: "2026-09-01", merchant: "עמלה", amount: 9, type: "expense", status: "BOOKED" },
+    { ...aggregateDebit, categorySub: "SECURITIES", id: "securities", date: "2026-09-03", merchant: "ני\"ע-קניה", amount: 19_999.01, type: "expense", status: "PENDING" },
+  ];
+  const markup = renderToStaticMarkup(createElement(MonthlyView, {
+    transactions: incidentTransactions,
+    periods: [{ key: "incident", label: "בדיקה", from: "2026-08-31", to: "2026-09-02", salaryBased: true }],
+    bankBalance: { balance: 14_507.76, date: "2026-09-02", bookedBalance: 34_506.77, bookedDate: "2026-09-01" },
+    preferences: emptyPreferences,
+    onPreferencesChange: () => undefined,
+  }));
+
+  assert.match(markup, /ני&quot;ע-קניה/);
+  assert.match(markup, /19,999\.01/);
+  assert.match(markup, /אירוע עתידי · ממתינה/);
+  assert.match(markup, /31,040\.18/);
+  assert.match(markup, /יצא מהחשבון[\s\S]*?16/);
+  assert.doesNotMatch(markup, /התאמת יתרת הבנק/);
 });
