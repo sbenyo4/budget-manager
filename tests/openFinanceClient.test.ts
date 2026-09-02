@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchBudgetData, fetchTransactions } from "../src/api/openFinance.ts";
+import { fetchBudgetData, fetchCheckingBalance, fetchTransactions } from "../src/api/openFinance.ts";
 import type { Transaction } from "../src/types.ts";
 
 const transaction: Transaction = {
@@ -47,6 +47,32 @@ test("a not-configured transactions response retains the existing settings-requi
       fetchTransactions("2026-08-01", "2026-08-31"),
       new Error("SERVICE_SETTINGS_REQUIRED")
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("checking balance retains both expected and closing-booked balances", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify([{
+    id: "account-1",
+    providerId: "bank",
+    accountType: "CHECKING",
+    accountName: "Checking",
+    currency: "ILS",
+    balance: 14_507.76,
+    balanceDate: "2026-09-02",
+    bookedBalance: 34_506.77,
+    bookedBalanceDate: "2026-09-01",
+  }]), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  try {
+    assert.deepEqual(await fetchCheckingBalance(), {
+      balance: 14_507.76,
+      date: "2026-09-02",
+      bookedBalance: 34_506.77,
+      bookedDate: "2026-09-01",
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -101,6 +127,47 @@ test("budget loading starts transactions and balance requests concurrently", asy
     });
   } finally {
     releaseTransactions?.();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("older account responses infer the booked balance from a pending securities movement", async () => {
+  const originalFetch = globalThis.fetch;
+  const pendingInvestment: Transaction = {
+    id: "pending-securities",
+    date: "2026-09-03",
+    merchant: "ני״ע-קניה",
+    amount: 19_999.01,
+    status: "PENDING",
+    source: "bank",
+    type: "expense",
+    categoryMain: "INCOMES_EXPENSES",
+    categorySub: "OTHER",
+  };
+  globalThis.fetch = async (input) => {
+    if (String(input).startsWith("/api/transactions")) {
+      return new Response(JSON.stringify([pendingInvestment]), { status: 200 });
+    }
+    return new Response(JSON.stringify([{
+      id: "account-1",
+      providerId: "hapoalim",
+      accountType: "CHECKING",
+      accountName: "Checking",
+      currency: "ILS",
+      balance: 14_507.76,
+      balanceDate: "2026-09-02",
+    }]), { status: 200 });
+  };
+
+  try {
+    const result = await fetchBudgetData("2026-08-31", "2026-09-15");
+    assert.deepEqual(result.bankBalance, {
+      balance: 14_507.76,
+      date: "2026-09-02",
+      bookedBalance: 34_506.77,
+      bookedDate: "2026-09-02",
+    });
+  } finally {
     globalThis.fetch = originalFetch;
   }
 });

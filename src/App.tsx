@@ -21,7 +21,7 @@ import {
 } from "./api/preferences";
 import { buildPeriods, tagSalaries } from "./logic/periods";
 import { applyCategoryOverrides } from "./logic/categoryOverrides";
-import type { Transaction } from "./types";
+import type { CheckingBalance, Transaction } from "./types";
 import { MonthlyView } from "./components/MonthlyView";
 import { TrendsView } from "./components/TrendsView";
 import { AIAnalysisView } from "./components/AIAnalysisView";
@@ -216,7 +216,7 @@ function BudgetApp() {
   const [dataReloadKey, setDataReloadKey] = useState(0);
   const [pinGate, setPinGate] = useState<PinGateMode>("checking");
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
-  const [bankBalance, setBankBalance] = useState<{ balance: number; date: string } | null>(null);
+  const [bankBalance, setBankBalance] = useState<CheckingBalance | null>(null);
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [serviceSettingsRequired, setServiceSettingsRequired] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import type { Transaction } from "../types";
+import type { CheckingBalance, Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { budgetDate, isConsumption, isSavings } from "../logic/flows";
 import { isRepeatedExpenseGroup } from "../logic/expenseRecurrence";
@@ -22,12 +22,13 @@ import {
   type TransactionAlert,
 } from "../logic/transactionAlerts";
 import { AlertsView } from "./AlertsView";
+import { isBookedBankMovement, pendingBalanceAdjustment } from "../logic/accountBalance";
 
 interface Props {
   transactions: Transaction[];
   periods: Period[];
   /** Real current checking balance (null in demo mode → relative sums shown) */
-  bankBalance: { balance: number; date: string } | null;
+  bankBalance: CheckingBalance | null;
   preferences: BudgetPreferences;
   onPreferencesChange: (preferences: BudgetPreferences) => void;
   onAlertApprove: (alerts: TransactionAlert[]) => Promise<void>;
@@ -592,8 +593,10 @@ export function TrendsView({
   // This is exact regardless of card-billing timing.
   const balanceByPeriodEnd = useMemo(() => {
     if (!bankBalance) return new Map<string, number>();
+    const anchorBalance = bankBalance.bookedBalance ?? bankBalance.balance;
+    const anchorDate = bankBalance.bookedDate ?? bankBalance.date;
     const bankTxs = categorizedTransactions
-      .filter((t) => t.source !== "card")
+      .filter((transaction) => isBookedBankMovement(transaction) && transaction.date <= anchorDate)
       .sort((a, b) => b.date.localeCompare(a.date));
     const balances = new Map<string, number>();
     const ends = [...chosen].sort((a, b) => b.to.localeCompare(a.to));
@@ -605,7 +608,7 @@ export function TrendsView({
         netAfter += tx.type === "income" ? tx.amount : -tx.amount;
         txIndex += 1;
       }
-      balances.set(period.to, bankBalance.balance - netAfter);
+      balances.set(period.to, anchorBalance - netAfter);
     }
     return balances;
   }, [bankBalance, categorizedTransactions, chosen]);
@@ -771,12 +774,14 @@ export function TrendsView({
           </div>
           {bankBalance ? (
             <div className="stat-tile highlight">
-              <span className="stat-label">יתרת עו״ש בפועל 🏦</span>
+              <span className="stat-label">יתרה צפויה בבנק 🏦</span>
               <span className={`stat-value ${bankBalance.balance >= 0 ? "net-positive" : "net-negative"}`}>
                 {formatILSWhole(bankBalance.balance)}
               </span>
               <span className="stat-hint">
-                מהבנק, נכון ל-{bankBalance.date.slice(8, 10)}.{bankBalance.date.slice(5, 7)} · תזרים בטווח:{" "}
+                {bankBalance.bookedBalance !== undefined && pendingBalanceAdjustment(bankBalance) !== null
+                  ? `יתרה רשומה: ${formatILS(bankBalance.bookedBalance)} · ממתינות: ${formatILS(pendingBalanceAdjustment(bankBalance) ?? 0)}`
+                  : `מהבנק, נכון ל-${bankBalance.date.slice(8, 10)}.${bankBalance.date.slice(5, 7)}`} · תזרים בטווח:{" "}
                 {leftoverTotal >= 0 ? "▲" : "▼"}{formatILS(Math.abs(leftoverTotal))}
               </span>
             </div>
@@ -935,7 +940,7 @@ export function TrendsView({
                   </th>
                   <th className="num">חיסכון והשקעות</th>
                   <th className="num">תזרים בתקופה</th>
-                  <th className="num">{bankBalance ? "יתרת עו״ש בסוף התקופה" : "מצטבר"}</th>
+                  <th className="num">{bankBalance ? "יתרת עו״ש רשומה בסוף התקופה" : "מצטבר"}</th>
                 </tr>
               </thead>
               <tbody>

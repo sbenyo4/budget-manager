@@ -67,3 +67,13 @@ export interface ClassifiedTransaction extends Transaction {
   /** Human-readable reason for the classification (shown in tooltip/table) */
   reason: string;
 }
+
+/** Current and last-booked ILS checking balances returned by the bank. */
+export interface CheckingBalance {
+  /** Available/expected balance, including movements the bank already anticipates. */
+  balance: number;
+  date: string;
+  /** Last fully booked balance, used to reconcile the booked transaction table. */
+  bookedBalance?: number;
+  bookedDate?: string;
+}

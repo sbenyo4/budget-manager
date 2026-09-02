@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Transaction } from "../types";
+import type { CheckingBalance, Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { cardDebitCutoffsWithFallback, isCardDebit, isCardTransactionCharged, isConsumption } from "../logic/flows";
 import { fixedExpenseKey, fixedExpenseKeysFor } from "../logic/expenseScope";
@@ -24,6 +24,12 @@ import { formatILS, formatILSWhole, todayIso } from "./format";
 import { PowerIcon } from "./PowerIcon";
 import { transactionHighlightClass } from "./transactionHighlight";
 import { fetchMerchantDetails, type MerchantDetails } from "../api/merchantDetails";
+import {
+  isBookedBankMovement,
+  pendingBalanceAdjustment,
+  pendingTransactionsMatchingBalance,
+  reconcileBookedPeriod,
+} from "../logic/accountBalance";
 
 function OneTimeIcon() {
   return (
@@ -180,7 +186,7 @@ interface Props {
   transactions: Transaction[];
   periods: Period[];
   /** Real current checking balance (null in demo mode → only period flow shown) */
-  bankBalance: { balance: number; date: string } | null;
+  bankBalance: CheckingBalance | null;
   preferences: BudgetPreferences;
   onPreferencesChange: (preferences: BudgetPreferences) => void;
 }
@@ -701,7 +707,7 @@ export function MonthlyView({
     () => categorizedTransactions.filter((tx) => tx.date >= periodFrom && tx.date <= periodTo),
     [categorizedTransactions, periodFrom, periodTo]
   );
-  const bankTxs = useMemo(() => inPeriod.filter((tx) => tx.source !== "card"), [inPeriod]);
+  const bankTxs = useMemo(() => inPeriod.filter(isBookedBankMovement), [inPeriod]);
   const cardTxs = useMemo(() => inPeriod.filter((tx) => tx.source === "card"), [inPeriod]);
   const cardTxsByBillingPeriod = useMemo(
     () =>
@@ -738,26 +744,22 @@ export function MonthlyView({
   const bankIncome = useMemo(() => sum(flowTxs.filter((t) => t.type === "income")), [flowTxs]);
   const bankExpense = useMemo(() => sum(flowTxs.filter((t) => t.type !== "income")), [flowTxs]);
   const net = bankIncome - bankExpense;
-  const accountNet = useMemo(
-    () => sum(bankTxs.filter((t) => t.type === "income")) - sum(bankTxs.filter((t) => t.type !== "income")),
-    [bankTxs]
+  const balanceReconciliation = useMemo(
+    () => bankBalance ? reconcileBookedPeriod(bankBalance, categorizedTransactions, periodFrom, periodTo) : null,
+    [bankBalance, categorizedTransactions, periodFrom, periodTo]
   );
-  const signedBankMovement = (tx: Transaction) => (tx.type === "income" ? tx.amount : -tx.amount);
-  const bankNetAfterPeriod = useMemo(
-    () =>
-      categorizedTransactions
-        .filter(
-          (tx) =>
-            tx.source !== "card" &&
-            tx.status !== "PENDING" &&
-            tx.date > periodTo &&
-            (!bankBalance?.date || tx.date <= bankBalance.date)
-        )
-        .reduce((total, tx) => total + signedBankMovement(tx), 0),
-    [bankBalance?.date, categorizedTransactions, periodTo]
+  const balanceAtPeriodEnd = balanceReconciliation?.end ?? null;
+  const balanceAtPeriodStart = balanceReconciliation?.start ?? null;
+  const pendingAccountAdjustment = bankBalance ? pendingBalanceAdjustment(bankBalance) : null;
+  const reflectedPendingTransactions = useMemo(
+    () => bankBalance ? pendingTransactionsMatchingBalance(bankBalance, categorizedTransactions) : [],
+    [bankBalance, categorizedTransactions]
   );
-  const balanceAtPeriodEnd = bankBalance ? bankBalance.balance - bankNetAfterPeriod : null;
-  const balanceAtPeriodStart = balanceAtPeriodEnd === null ? null : balanceAtPeriodEnd - accountNet;
+  const reflectedPendingHint = reflectedPendingTransactions.length === 1
+    ? `${reflectedPendingTransactions[0].merchant} ממתינה: ${formatILS(pendingAccountAdjustment ?? 0)} · ערך ${reflectedPendingTransactions[0].date.slice(8, 10)}.${reflectedPendingTransactions[0].date.slice(5, 7)}`
+    : pendingAccountAdjustment !== null && Math.abs(pendingAccountAdjustment) >= 0.005
+      ? `השפעת תנועות ממתינות: ${formatILS(pendingAccountAdjustment)}`
+      : null;
 
   // Separate a pending aggregate bank debit from the genuinely next card cycle.
   // Both are unsettled, but the former is already represented in account state.
@@ -1291,24 +1293,24 @@ export function MonthlyView({
           <span className="stat-hint">{cardFilter ? "זיכויים פחות עסקאות בכרטיס" : "הכנסות לעו״ש פחות יציאות אמיתיות מהעו״ש"}</span>
         </div>
         <div className={bankBalance ? "stat-tile highlight" : "stat-tile"}>
-          <span className="stat-label">{bankBalance ? "יתרת עו״ש בפועל" : "יתרת עו״ש בפועל"}</span>
+          <span className="stat-label">יתרה צפויה בבנק</span>
           <span className={`stat-value ${bankBalance && bankBalance.balance < 0 ? "net-negative" : "net-positive"}`}>
             {bankBalance ? formatILSWhole(bankBalance.balance) : "—"}
           </span>
           <span className="stat-hint">
             {bankBalance
-              ? `מהבנק, נכון ל-${bankBalance.date.slice(8, 10)}.${bankBalance.date.slice(5, 7)}`
+              ? reflectedPendingHint ?? `מהבנק, נכון ל-${bankBalance.date.slice(8, 10)}.${bankBalance.date.slice(5, 7)}`
               : "לא זמין במצב הדגמה"}
           </span>
         </div>
         <div className="stat-tile">
-          <span className="stat-label">יתרה בסוף התקופה</span>
+          <span className="stat-label">יתרה רשומה בסוף התקופה</span>
           <span className={`stat-value ${balanceAtPeriodEnd !== null && balanceAtPeriodEnd < 0 ? "net-negative" : ""}`}>
             {balanceAtPeriodEnd !== null ? formatILSWhole(balanceAtPeriodEnd) : "—"}
           </span>
           <span className="stat-hint">
             {balanceAtPeriodStart !== null
-              ? `תחילת תקופה: ${formatILS(balanceAtPeriodStart)}`
+              ? `תחילת תקופה: ${formatILS(balanceAtPeriodStart)}${bankBalance?.bookedDate ? ` · לפי יתרה סגורה ל-${bankBalance.bookedDate.slice(8, 10)}.${bankBalance.bookedDate.slice(5, 7)}` : ""}`
               : "מחושבת מהיתרה הנוכחית ותנועות הבנק"}
           </span>
         </div>

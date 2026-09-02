@@ -688,6 +688,12 @@ function pickBalance(balances: RawBalance[] = []): RawBalance | undefined {
   return balances[0];
 }
 
+function bookedBalance(balances: RawBalance[] = []): RawBalance | undefined {
+  return balances.find(
+    (balance) => balance.balanceType === "closingBooked" && balance.creditLimitIncluded === false
+  );
+}
+
 export async function getTransactions(settings: ServiceSettings, from: string, to: string) {
   const [bank, card] = await Promise.all([
     fetchTransactions(settings, from, to, "BANK"),
@@ -721,6 +727,7 @@ export async function getAccounts(settings: ServiceSettings) {
 
   return items.map((raw, i) => {
     const balance = pickBalance(raw.balances);
+    const booked = bookedBalance(raw.balances);
     return {
       id: raw.id ?? `acc-${i}`,
       providerId: raw.providerId ?? "",
@@ -729,6 +736,12 @@ export async function getAccounts(settings: ServiceSettings) {
       currency: balance?.balanceAmount?.currency ?? "ILS",
       balance: Number(balance?.balanceAmount?.amount ?? 0),
       balanceDate: balance?.referenceDate ?? "",
+      ...(booked
+        ? {
+            bookedBalance: Number(booked.balanceAmount?.amount ?? 0),
+            bookedBalanceDate: booked.referenceDate ?? "",
+          }
+        : {}),
     };
   });
 }

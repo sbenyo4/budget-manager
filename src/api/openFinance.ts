@@ -1,4 +1,4 @@
-import type { Transaction } from "../types";
+import type { CheckingBalance, Transaction } from "../types";
 import { authFetch } from "./authToken";
 
 export interface Account {
@@ -9,22 +9,32 @@ export interface Account {
   currency: string;
   balance: number;
   balanceDate: string;
+  bookedBalance?: number;
+  bookedBalanceDate?: string;
 }
 
 /**
  * Current ILS checking-account balance (sum over checking accounts), or null
  * in demo mode / on failure — the UI falls back to relative cumulative sums.
  */
-export async function fetchCheckingBalance(signal?: AbortSignal): Promise<{ balance: number; date: string } | null> {
+export async function fetchCheckingBalance(signal?: AbortSignal): Promise<CheckingBalance | null> {
   try {
     const res = await authFetch("/api/accounts", { signal });
     if (!res.ok) return null;
     const accounts = (await res.json()) as Account[];
     const checking = accounts.filter((a) => a.accountType === "CHECKING" && a.currency === "ILS");
     if (checking.length === 0) return null;
+    const hasCompleteBookedBalance = checking.every((account) => Number.isFinite(account.bookedBalance));
+    const bookedDates = checking.map((account) => account.bookedBalanceDate).filter((date): date is string => Boolean(date));
     return {
       balance: checking.reduce((s, a) => s + a.balance, 0),
       date: checking[0].balanceDate,
+      ...(hasCompleteBookedBalance
+        ? {
+            bookedBalance: checking.reduce((sum, account) => sum + (account.bookedBalance ?? 0), 0),
+            bookedDate: bookedDates.sort()[bookedDates.length - 1] ?? checking[0].balanceDate,
+          }
+        : {}),
     };
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -39,7 +49,7 @@ export interface FetchResult {
 }
 
 export interface BudgetDataResult extends FetchResult {
-  bankBalance: { balance: number; date: string } | null;
+  bankBalance: CheckingBalance | null;
 }
 
 function pendingInvestmentKey(tx: Transaction): string | null {
@@ -47,6 +57,25 @@ function pendingInvestmentKey(tx: Transaction): string | null {
   const merchant = tx.merchant.replace(/[\s\-–—_'״”"]/g, "").toLowerCase();
   if (!merchant.includes("ניעקניה")) return null;
   return [tx.date, merchant, tx.categoryMain, tx.categorySub].join(":");
+}
+
+function withInferredBookedBalance(
+  balance: CheckingBalance | null,
+  transactions: Transaction[]
+): CheckingBalance | null {
+  if (!balance || balance.bookedBalance !== undefined) return balance;
+  const pendingInvestmentNet = transactions
+    .filter((transaction) => pendingInvestmentKey(transaction) !== null)
+    .reduce(
+      (total, transaction) => total + (transaction.type === "income" ? transaction.amount : -transaction.amount),
+      0
+    );
+  if (Math.abs(pendingInvestmentNet) < 0.005) return balance;
+  return {
+    ...balance,
+    bookedBalance: Math.round((balance.balance - pendingInvestmentNet) * 100) / 100,
+    bookedDate: balance.date,
+  };
 }
 
 export function dedupePendingInvestmentTransactions(transactions: Transaction[]): Transaction[] {
@@ -180,6 +209,6 @@ export async function fetchBudgetData(from: string, to: string, signal?: AbortSi
   ]);
   return {
     ...result,
-    bankBalance: result.demo ? null : bankBalance,
+    bankBalance: result.demo ? null : withInferredBookedBalance(bankBalance, result.transactions),
   };
 }

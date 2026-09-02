@@ -80,6 +80,12 @@ function pickBalance(balances: RawBalance[] = []): RawBalance | undefined {
   return balances[0];
 }
 
+function bookedBalance(balances: RawBalance[] = []): RawBalance | undefined {
+  return balances.find(
+    (balance) => balance.balanceType === "closingBooked" && balance.creditLimitIncluded === false
+  );
+}
+
 interface RawTransaction {
   id?: string;
   accountNumber?: string;
@@ -1259,6 +1265,7 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
         .then((items) => {
           const accounts = items.map((raw, i) => {
             const balance = pickBalance(raw.balances);
+            const booked = bookedBalance(raw.balances);
             return {
               id: raw.id ?? `acc-${i}`,
               providerId: raw.providerId ?? "",
@@ -1267,6 +1274,12 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
               currency: balance?.balanceAmount?.currency ?? "ILS",
               balance: Number(balance?.balanceAmount?.amount ?? 0),
               balanceDate: balance?.referenceDate ?? "",
+              ...(booked
+                ? {
+                    bookedBalance: Number(booked.balanceAmount?.amount ?? 0),
+                    bookedBalanceDate: booked.referenceDate ?? "",
+                  }
+                : {}),
             };
           });
           sendJson(res, 200, accounts);
