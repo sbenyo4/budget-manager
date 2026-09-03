@@ -2555,7 +2555,8 @@ h1 {
 }
 
 .source-chip,
-.pending-chip {
+.pending-chip,
+.balance-reflected-chip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2587,6 +2588,13 @@ h1 {
   flex: 0 0 auto;
   background: var(--warning-wash);
   color: var(--text-primary);
+}
+
+.balance-reflected-chip {
+  flex: 0 0 auto;
+  border-color: var(--positive-line);
+  background: var(--positive-wash);
+  color: var(--good);
 }
 
 .pending-bank-row td {

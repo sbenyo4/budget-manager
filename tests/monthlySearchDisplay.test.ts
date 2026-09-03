@@ -93,7 +93,7 @@ test("aggregate debits with multiple displayed details stay sorted by their debi
   assert.deepEqual(sorted.map((tx) => tx.id), ["card-debit", "bank-transfer"]);
 });
 
-test("a pending bank movement reflected in the balance is appended to the existing table only", () => {
+test("a pending bank movement reflected in the balance is appended and shown as executed but unbooked", () => {
   const pendingMovement: Transaction = {
     ...aggregateDebit,
     id: "pending-securities",
@@ -109,7 +109,7 @@ test("a pending bank movement reflected in the balance is appended to the existi
   );
   assert.equal(accountMovementsForDisplay([pendingMovement], [pendingMovement]).length, 1);
   assert.doesNotMatch(monthlyViewSource, /balance-reconciliation-title/);
-  assert.match(monthlyViewSource, /אירוע עתידי · ממתינה/);
+  assert.match(monthlyViewSource, /בוצעה · טרם נרשמה/);
   assert.match(monthlyViewSource, /pending-bank-row/);
 });
 
@@ -130,7 +130,8 @@ test("the incident renders as a marked future row without changing the booked pe
 
   assert.match(markup, /ני&quot;ע-קניה/);
   assert.match(markup, /19,999\.01/);
-  assert.match(markup, /אירוע עתידי · ממתינה/);
+  assert.match(markup, /בוצעה · טרם נרשמה/);
+  assert.doesNotMatch(markup, /אירוע עתידי · ממתינה/);
   assert.match(markup, /31,040\.18/);
   assert.match(markup, /יצא מהחשבון[\s\S]*?16/);
   assert.doesNotMatch(markup, /התאמת יתרת הבנק/);

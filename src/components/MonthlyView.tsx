@@ -766,8 +766,14 @@ export function MonthlyView({
     () => bankBalance ? pendingTransactionsMatchingBalance(bankBalance, categorizedTransactions) : [],
     [bankBalance, categorizedTransactions]
   );
+  const reflectedPendingTransactionIds = useMemo(
+    () => new Set(reflectedPendingTransactions.map((transaction) => transaction.id)),
+    [reflectedPendingTransactions]
+  );
   const reflectedPendingHint = reflectedPendingTransactions.length === 1
-    ? `${reflectedPendingTransactions[0].merchant} ממתינה: ${formatILS(pendingAccountAdjustment ?? 0)} · ערך ${reflectedPendingTransactions[0].date.slice(8, 10)}.${reflectedPendingTransactions[0].date.slice(5, 7)}`
+    ? `${reflectedPendingTransactions[0].merchant} בוצעה וטרם נרשמה: ${formatILS(pendingAccountAdjustment ?? 0)} · ערך ${reflectedPendingTransactions[0].date.slice(8, 10)}.${reflectedPendingTransactions[0].date.slice(5, 7)}`
+    : reflectedPendingTransactions.length > 1
+      ? `תנועות שבוצעו וטרם נרשמו: ${formatILS(pendingAccountAdjustment ?? 0)}`
     : pendingAccountAdjustment !== null && Math.abs(pendingAccountAdjustment) >= 0.005
       ? `השפעת תנועות ממתינות: ${formatILS(pendingAccountAdjustment)}`
       : null;
@@ -1661,6 +1667,7 @@ export function MonthlyView({
                 const isCategoryExcluded = excludedCategories.has(displayCategoryMain);
                 const isReportedPending = tx.status?.toUpperCase() === "PENDING";
                 const isPendingBankMovement = tx.source !== "card" && isReportedPending;
+                const isBalanceReflectedBankMovement = isPendingBankMovement && reflectedPendingTransactionIds.has(tx.id);
                 const isFutureBankMovement = isPendingBankMovement && tx.date > periodTo;
                 const canToggleTransaction = (!isCardDebit(tx) || Boolean(singleDebitDetail)) && !isPendingBankMovement;
                 const isTransactionExcluded = canToggleTransaction && excludedTransactionIds.has(displayTx.id);
@@ -1678,7 +1685,7 @@ export function MonthlyView({
                 return (
                 <Fragment key={tx.id}>
                 <tr
-                  className={`${isCardDebit(tx) ? "aggregate-row" : ""} ${canExpandDebit ? "expandable-row" : ""} ${isPendingBankMovement ? "pending-bank-row" : ""} ${isTransactionExcluded ? "excluded-transaction" : ""} ${transactionHighlightClass(displayTx, highAmountThreshold)}`.trim()}
+                  className={`${isCardDebit(tx) ? "aggregate-row" : ""} ${canExpandDebit ? "expandable-row" : ""} ${isPendingBankMovement && !isBalanceReflectedBankMovement ? "pending-bank-row" : ""} ${isTransactionExcluded ? "excluded-transaction" : ""} ${transactionHighlightClass(displayTx, highAmountThreshold)}`.trim()}
                   onClick={
                     canExpandDebit
                       ? (event) => {
@@ -1759,7 +1766,12 @@ export function MonthlyView({
                         <span aria-hidden="true">i</span>
                       </button>
                     )}
-                    {isReportedPending && (
+                    {isBalanceReflectedBankMovement && (
+                      <span className="balance-reflected-chip" title="הסכום כבר משתקף ביתרה הזמינה, אך הבנק טרם רשם את התנועה סופית">
+                        ✓ בוצעה · טרם נרשמה
+                      </span>
+                    )}
+                    {isReportedPending && !isBalanceReflectedBankMovement && (
                       <span className="pending-chip" title="התנועה התקבלה מהבנק בסטטוס PENDING ואינה נכללת עדיין בסיכומי התזרים">
                         ⏳ {isFutureBankMovement ? "אירוע עתידי · ממתינה" : "ממתינה"}
                       </span>
