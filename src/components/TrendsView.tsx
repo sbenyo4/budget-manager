@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import type { CheckingBalance, Transaction } from "../types";
 import type { Period } from "../logic/periods";
-import { budgetDate, isConsumption, isSavings } from "../logic/flows";
+import { budgetDate, cardDebitCutoffs, isConsumption, isSavings } from "../logic/flows";
 import { isRepeatedExpenseGroup } from "../logic/expenseRecurrence";
 import { fixedExpenseKey, fixedExpenseKeysFor } from "../logic/expenseScope";
 import type { BudgetPreferences } from "../api/preferences";
@@ -411,6 +411,7 @@ export function TrendsView({
       }),
     [category, excludedCategories, expenseScope, fixedExpenseKeys, searchedTransactions]
   );
+  const alertCardCutoffs = useMemo(() => cardDebitCutoffs(transactions), [transactions]);
   const periodAlerts = useMemo(
     () =>
       detectTransactionAlerts(trendAlertTransactions, {
@@ -420,8 +421,10 @@ export function TrendsView({
         alertFrom: rangeFrom,
         alertTo: rangeTo,
         includeHistoricalPriceChanges: true,
+        cardCutoffs: alertCardCutoffs,
       }),
     [
+      alertCardCutoffs,
       highAmountThreshold,
       preferences.alertApprovals,
       preferences.fixedExpenses,

@@ -24,6 +24,13 @@ function formatAlertDate(date: string): string {
   return `${day}.${month}.${year}`;
 }
 
+function formatAlertMonth(month: string): string {
+  const [year, monthNumber] = month.split("-");
+  return new Intl.DateTimeFormat("he-IL", { month: "long", year: "numeric" }).format(
+    new Date(Date.UTC(Number(year), Number(monthNumber) - 1, 1))
+  );
+}
+
 function alertMarker(alert: TransactionAlert): string {
   if (alert.severity === "critical") return "!";
   if (alert.kind === "price_increase") return "↗";
@@ -198,6 +205,43 @@ export function AlertsView({
                     </strong>
                     {alert.increasePercent !== undefined && <em>+{alert.increasePercent}%</em>}
                   </div>
+                )}
+                {alert.calculation && (
+                  <details className="alert-calculation">
+                    <summary>איך חישבנו את הסכום?</summary>
+                    <div className="alert-calculation-content">
+                      <section>
+                        <h4>החיוב הנוכחי — {formatAlertMonth(alert.calculation.currentMonth)}</h4>
+                        <ul>
+                          {alert.calculation.currentTransactions.map((transaction) => (
+                            <li key={transaction.id}>
+                              <span>
+                                <time dateTime={transaction.date}>{formatAlertDate(transaction.date)}</time>
+                                {transaction.cardLast4 && ` · כרטיס ${transaction.cardLast4}`}
+                                {transaction.billingDate && ` · חיוב ${formatAlertDate(transaction.billingDate)}`}
+                              </span>
+                              <span>{formatILS(transaction.amount)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                        <strong>
+                          סה״כ {alert.calculation.currentTransactions.length} עסקאות: {formatILS(alert.amount)}
+                        </strong>
+                      </section>
+                      <section>
+                        <h4>החודשים שמהם חושב הבסיס החציוני</h4>
+                        <ul>
+                          {alert.calculation.historyMonths.map(({ month, amount }) => (
+                            <li key={month}>
+                              <span>{formatAlertMonth(month)}</span>
+                              <span>{formatILS(amount)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                        <strong>חציון: {formatILS(alert.previousAmount ?? 0)}</strong>
+                      </section>
+                    </div>
+                  </details>
                 )}
               </div>
               <div className="alert-card-actions">

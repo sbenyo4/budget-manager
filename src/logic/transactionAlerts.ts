@@ -1,5 +1,11 @@
 import type { Transaction } from "../types";
-import { budgetDate, isConsumption } from "./flows";
+import {
+  budgetDate,
+  cardDebitCutoffs,
+  isCardTransactionCharged,
+  isConsumption,
+  type CardDebitCutoffs,
+} from "./flows";
 import { merchantKey } from "./categoryOverrides";
 
 export type TransactionAlertKind =
@@ -27,6 +33,17 @@ export interface TransactionAlert {
   title: string;
   description: string;
   transactionIds: string[];
+  calculation?: {
+    currentMonth: string;
+    currentTransactions: Array<{
+      id: string;
+      date: string;
+      billingDate?: string;
+      cardLast4?: string;
+      amount: number;
+    }>;
+    historyMonths: Array<{ month: string; amount: number }>;
+  };
 }
 
 export function mergeAlertApprovals(
@@ -81,6 +98,7 @@ interface DetectTransactionAlertsOptions {
   alertFrom?: string;
   alertTo?: string;
   includeHistoricalPriceChanges?: boolean;
+  cardCutoffs?: CardDebitCutoffs;
 }
 
 interface MerchantGroup {
@@ -268,6 +286,21 @@ function recurringAlerts(
           ? "חריגה לעומת הבסיס החציוני."
           : "החיוב עלה לעומת החודש הקודם.",
         transactionIds: current.transactions.map((tx) => tx.id),
+        calculation: {
+          currentMonth,
+          currentTransactions: current.transactions
+            .map((tx) => ({
+              id: tx.id,
+              date: tx.date,
+              ...(tx.billingDate ? { billingDate: tx.billingDate } : {}),
+              ...(tx.cardLast4 ? { cardLast4: tx.cardLast4 } : {}),
+              amount: roundAmount(tx.amount),
+            }))
+            .sort((a, b) => a.date.localeCompare(b.date)),
+          historyMonths: months
+            .slice(Math.max(0, index - 6), index)
+            .map(([month, entry]) => ({ month, amount: roundAmount(entry.amount) })),
+        },
       });
     }
   }
@@ -372,10 +405,17 @@ export function detectTransactionAlerts(
     alertFrom,
     alertTo,
     includeHistoricalPriceChanges = false,
+    cardCutoffs,
   }: DetectTransactionAlertsOptions
 ): TransactionAlert[] {
+  const settledCardCutoffs = cardCutoffs ?? cardDebitCutoffs(transactions);
   const expenses = transactions.filter(
-    (tx) => tx.type !== "income" && tx.status !== "PENDING" && isConsumption(tx) && tx.amount > 0
+    (tx) =>
+      tx.type !== "income" &&
+      tx.status !== "PENDING" &&
+      isConsumption(tx) &&
+      isCardTransactionCharged(tx, settledCardCutoffs) &&
+      tx.amount > 0
   );
   const newestDate = latestDate(expenses);
   if (!newestDate) return [];

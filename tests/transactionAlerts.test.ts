@@ -70,6 +70,84 @@ test("detects a recurring service price increase", () => {
   assert.equal(alerts[0].kind, "price_increase");
   assert.equal(alerts[0].previousAmount, 50);
   assert.equal(alerts[0].amount, 65);
+  assert.deepEqual(alerts[0].calculation, {
+    currentMonth: "2026-07",
+    currentTransactions: [{ id: "n3", date: "2026-07-01", amount: 65 }],
+    historyMonths: [
+      { month: "2026-05", amount: 50 },
+      { month: "2026-06", amount: 50 },
+    ],
+  });
+});
+
+test("shows every transaction that contributes to a recurring alert total", () => {
+  const alert = detectTransactionAlerts(
+    [
+      expense("y1", "2026-07-02", "YANGO DELI B2C", 120, { recurring: true }),
+      expense("y2", "2026-08-02", "YANGO DELI B2C", 140, { recurring: true }),
+      expense("y3", "2026-09-02", "YANGO DELI B2C", 180.12, { recurring: true }),
+      expense("y4", "2026-09-15", "YANGO DELI B2C", 200.2, { recurring: true }),
+    ],
+    { highAmountThreshold: 5_000 }
+  )[0];
+
+  assert.equal(alert.amount, 380.32);
+  assert.deepEqual(alert.calculation?.currentTransactions, [
+    { id: "y3", date: "2026-09-02", amount: 180.12 },
+    { id: "y4", date: "2026-09-15", amount: 200.2 },
+  ]);
+});
+
+test("recurring alerts exclude a future card charge that has not reached a booked debit", () => {
+  const alerts = detectTransactionAlerts(
+    [
+      expense("older", "2026-07-19", "YANGO DELI B2C", 176.3, {
+        source: "card",
+        billingDate: "2026-08-10",
+        cardLast4: "5653",
+        status: "BOOKED",
+        recurring: true,
+      }),
+      expense("current-1", "2026-08-09", "YANGO DELI B2C", 102.98, {
+        source: "card",
+        billingDate: "2026-09-10",
+        cardLast4: "5653",
+        status: "BOOKED",
+        recurring: true,
+      }),
+      expense("current-2", "2026-08-20", "YANGO DELI B2C", 128.74, {
+        source: "card",
+        billingDate: "2026-09-10",
+        cardLast4: "5653",
+        status: "BOOKED",
+        recurring: true,
+      }),
+      expense("future", "2026-09-08", "YANGO DELI B2C", 148.6, {
+        source: "card",
+        billingDate: "2026-09-15",
+        cardLast4: "9699",
+        status: "BOOKED",
+        recurring: true,
+      }),
+      expense("debit-5653", "2026-09-10", "card debit", 231.72, {
+        source: "bank",
+        cardLast4: "5653",
+        categoryMain: "INCOMES_EXPENSES",
+        categorySub: "CREDIT_CARD_CHECKING",
+        status: "BOOKED",
+      }),
+    ],
+    { highAmountThreshold: 5_000 }
+  );
+
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].amount, 231.72);
+  assert.equal(alerts[0].date, "2026-09-10");
+  assert.deepEqual(alerts[0].transactionIds.sort(), ["current-1", "current-2"]);
+  assert.deepEqual(alerts[0].calculation?.currentTransactions, [
+    { id: "current-1", date: "2026-08-09", billingDate: "2026-09-10", cardLast4: "5653", amount: 102.98 },
+    { id: "current-2", date: "2026-08-20", billingDate: "2026-09-10", cardLast4: "5653", amount: 128.74 },
+  ]);
 });
 
 test("an approved new price becomes the baseline until another increase", () => {

@@ -46,7 +46,9 @@ export function subLabel(sub: string): string {
 
 export function displaySubLabel(sub: string): string {
   if (!sub || sub === "USER_DEFINED" || sub === "UNCATEGORIZED") return "";
-  return subLabel(sub);
+  // The main category is already shown in Hebrew. Do not expose raw provider
+  // taxonomy codes such as "RESTAURANT" in the Hebrew interface.
+  return SUB_LABELS[sub] ?? "";
 }
 
 /**
