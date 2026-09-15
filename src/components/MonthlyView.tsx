@@ -472,6 +472,29 @@ function txSelfMatchesSearch(tx: Transaction, query: string, categoryMain = tx.c
   return valuesMatchSearch(searchValuesFor(tx, categoryMain), query);
 }
 
+export function pendingTransactionMatchesSearch(
+  tx: Transaction,
+  query: string,
+  categoryMain = tx.categoryMain
+): boolean {
+  if (!query) return true;
+  const billingDate = tx.billingDate
+    ? new Date(`${tx.billingDate}T00:00:00`).toLocaleDateString("he-IL", {
+        day: "numeric",
+        month: "numeric",
+        year: "2-digit",
+      })
+    : "";
+  return (
+    txSelfMatchesSearch(tx, query, categoryMain) ||
+    valuesMatchSearch([
+      tx.cardLast4 ? `כרטיס ${tx.cardLast4}` : "",
+      tx.billingDate ?? "",
+      billingDate,
+    ], query)
+  );
+}
+
 function shouldSearchDetailCategory(query: string): boolean {
   return query.length >= 4 || subscriptionSearchAliases(query).length > 0;
 }
@@ -670,6 +693,9 @@ export function MonthlyView({
   const [pendingMonthFilter, setPendingMonthFilter] = useState<string | null>(null);
   const [expenseScope, setExpenseScope] = useState<ExpenseScope>("all");
   const [categoryViewMode, setCategoryViewMode] = useState<CategoryViewMode>("transactions");
+  const normalizedSearchQuery = useMemo(() => activeSearchQuery(searchQuery), [searchQuery]);
+  const visibleSearchQuery = visibleSearchTerm(searchQuery);
+  const hasActiveSearch = Boolean(normalizedSearchQuery);
   const sectionOverrides = preferences.sectionOverrides;
   const installmentOverrides = preferences.installmentOverrides;
   const oneTimeExpenses = useMemo(() => new Set(preferences.oneTimeExpenses), [preferences.oneTimeExpenses]);
@@ -876,12 +902,46 @@ export function MonthlyView({
     () => summarizePendingBillingMonths(pendingBillingSummaries),
     [pendingBillingSummaries]
   );
-  const visiblePendingGroups = useMemo(
-    () => pendingMonthFilter === null
+  const visiblePendingGroups = useMemo(() => {
+    const groupsForMonth = pendingMonthFilter === null
       ? pendingGroups
-      : pendingGroups.filter((group) => (group.billingDate?.slice(0, 7) ?? "next") === pendingMonthFilter),
-    [pendingGroups, pendingMonthFilter]
-  );
+      : pendingGroups.filter((group) => (group.billingDate?.slice(0, 7) ?? "next") === pendingMonthFilter);
+    if (!pendingDetailsOpen || !normalizedSearchQuery) return groupsForMonth;
+
+    return groupsForMonth
+      .map((group) => {
+        const transactions = group.transactions.filter((tx) =>
+          pendingTransactionMatchesSearch(tx, normalizedSearchQuery, effectiveCategoryMain(tx))
+        );
+        let total = 0;
+        let pendingInstallmentCount = 0;
+        for (const tx of transactions) {
+          const override = installmentOverrides[tx.id];
+          if (hasPendingMonthlyInstallmentAmount(tx, override)) {
+            pendingInstallmentCount += 1;
+          } else {
+            const amount = installmentMonthlyAmount(tx, override) ?? tx.amount;
+            total += tx.type === "income" ? -amount : amount;
+          }
+        }
+        return {
+          ...group,
+          transactions,
+          total,
+          pendingInstallmentCount,
+          inferredCount: transactions.filter((tx) => inferredPendingBillingDates.has(tx.id)).length,
+        };
+      })
+      .filter((group) => group.transactions.length > 0);
+  }, [
+    effectiveCategoryMain,
+    inferredPendingBillingDates,
+    installmentOverrides,
+    normalizedSearchQuery,
+    pendingDetailsOpen,
+    pendingGroups,
+    pendingMonthFilter,
+  ]);
   const providerPendingGroups = useMemo(() => {
     const groups = new Map<string, Transaction[]>();
     for (const tx of providerPendingCard) {
@@ -895,6 +955,17 @@ export function MonthlyView({
       transactions: [...transactions].sort((a, b) => b.date.localeCompare(a.date)),
     }));
   }, [providerPendingCard]);
+  const visibleProviderPendingGroups = useMemo(() => {
+    if (!pendingDetailsOpen || !normalizedSearchQuery) return providerPendingGroups;
+    return providerPendingGroups
+      .map((group) => ({
+        ...group,
+        transactions: group.transactions.filter((tx) =>
+          pendingTransactionMatchesSearch(tx, normalizedSearchQuery, effectiveCategoryMain(tx))
+        ),
+      }))
+      .filter((group) => group.transactions.length > 0);
+  }, [effectiveCategoryMain, normalizedSearchQuery, pendingDetailsOpen, providerPendingGroups]);
   useEffect(() => {
     if (
       pendingMonthFilter !== null &&
@@ -1020,9 +1091,6 @@ export function MonthlyView({
     () => (categoryFilter || expenseScope !== "all" ? sortedCategoryMovements : sortedAccountMovements),
     [categoryFilter, expenseScope, sortedAccountMovements, sortedCategoryMovements]
   );
-  const normalizedSearchQuery = useMemo(() => activeSearchQuery(searchQuery), [searchQuery]);
-  const visibleSearchQuery = visibleSearchTerm(searchQuery);
-  const hasActiveSearch = Boolean(normalizedSearchQuery);
   const txMatchesVisibleSearch = useCallback(
     (tx: Transaction) => {
       if (!normalizedSearchQuery) return true;
@@ -1414,7 +1482,7 @@ export function MonthlyView({
               ))}
             </div>
           )}
-          {pendingGroups.length > 0 ? (
+          {visiblePendingGroups.length > 0 ? (
             <div className="pending-card-groups">
               {visiblePendingGroups.map((group) => (
                 <div key={`${group.billingDate ?? "next"}-${group.cardLast4 ?? "card"}`} className="pending-card-group">
@@ -1441,9 +1509,9 @@ export function MonthlyView({
                       const installment = installmentText(tx, manualInstallmentTotal);
                       return (
                         <li key={tx.id} className="pending-card-item">
-                          <span className="pending-card-date">{formatShortDate(tx.date)}</span>
+                          <span className="pending-card-date">{highlightSearchText(formatShortDate(tx.date), visibleSearchQuery)}</span>
                           <span className="pending-card-merchant">
-                            {tx.merchant}
+                            {highlightSearchText(tx.merchant, visibleSearchQuery)}
                             {installment && <span className="sub-label"> · {installment}</span>}
                             {tx.installment?.monthlyAmountPending && (
                               <InstallmentOverrideControl
@@ -1454,7 +1522,7 @@ export function MonthlyView({
                           </span>
                           <span className="pending-card-category">
                             <span className="swatch" style={{ background: mainColor(categoryMain) }} aria-hidden />
-                            {categoryLabel(categoryMain)}
+                            {highlightSearchText(categoryLabel(categoryMain), visibleSearchQuery)}
                           </span>
                           <strong className="pending-card-amount">
                             {hasPendingMonthlyInstallmentAmount(tx, manualInstallmentTotal)
@@ -1469,11 +1537,15 @@ export function MonthlyView({
               ))}
             </div>
           ) : (
-            <p className="empty-row">אין חיובי אשראי מאושרים שטרם חויבו בתקופה הזו.</p>
+            <p className="empty-row">
+              {hasActiveSearch
+                ? `לא נמצאו חיובים עתידיים שמתאימים לחיפוש „${visibleSearchQuery}”.`
+                : "אין חיובי אשראי מאושרים שטרם חויבו בתקופה הזו."}
+            </p>
           )}
-          {providerPendingGroups.length > 0 && (
+          {visibleProviderPendingGroups.length > 0 && (
             <div className="pending-card-groups" aria-label="עסקאות אשראי ממתינות לאישור">
-              {providerPendingGroups.map((group) => (
+              {visibleProviderPendingGroups.map((group) => (
                 <div key={`provider-pending-${group.cardLast4 ?? "card"}`} className="pending-card-group">
                   <div className="pending-card-group-head">
                     <span>
@@ -1490,14 +1562,14 @@ export function MonthlyView({
                       const installment = installmentText(tx, manualInstallmentTotal);
                       return (
                         <li key={tx.id} className="pending-card-item">
-                          <span className="pending-card-date">{formatShortDate(tx.date)}</span>
+                          <span className="pending-card-date">{highlightSearchText(formatShortDate(tx.date), visibleSearchQuery)}</span>
                           <span className="pending-card-merchant">
-                            {tx.merchant}
+                            {highlightSearchText(tx.merchant, visibleSearchQuery)}
                             {installment && <span className="sub-label"> · {installment}</span>}
                           </span>
                           <span className="pending-card-category">
                             <span className="swatch" style={{ background: mainColor(categoryMain) }} aria-hidden />
-                            {categoryLabel(categoryMain)}
+                            {highlightSearchText(categoryLabel(categoryMain), visibleSearchQuery)}
                           </span>
                           <strong className="pending-card-amount">
                             {tx.type === "income" ? "+" : "−"}{formatILS(manualInstallmentAmount ?? tx.amount)}

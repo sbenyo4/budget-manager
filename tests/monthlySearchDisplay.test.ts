@@ -7,6 +7,7 @@ import { emptyPreferences } from "../src/api/preferences";
 import {
   MonthlyView,
   accountMovementsForDisplay,
+  pendingTransactionMatchesSearch,
   sortTransactionsByDisplayedDate,
   transactionForDisplayedDebitDetails,
 } from "../src/components/MonthlyView";
@@ -50,6 +51,20 @@ test("a single matched card transaction supplies every displayed row value", () 
   assert.match(monthlyViewSource, /transactionHighlightClass\(displayTx, highAmountThreshold\)/);
   assert.match(monthlyViewSource, /className=\{`num \$\{displayTx\.type === "income"/);
   assert.match(monthlyViewSource, /formatILS\(displayTx\.amount\)/);
+});
+
+test("free search matches future charges by their visible transaction fields", () => {
+  assert.equal(pendingTransactionMatchesSearch(matchedPurchase, "free tv"), true);
+  assert.equal(pendingTransactionMatchesSearch(matchedPurchase, "משק בית", "HOUSEHOLD_&_SERVICES"), true);
+  assert.equal(pendingTransactionMatchesSearch({ ...matchedPurchase, cardLast4: "1234" }, "כרטיס 1234"), true);
+  assert.equal(pendingTransactionMatchesSearch(matchedPurchase, "10.8.26"), true);
+  assert.equal(pendingTransactionMatchesSearch(matchedPurchase, "29.9"), true);
+  assert.equal(pendingTransactionMatchesSearch(matchedPurchase, "עסקה אחרת"), false);
+});
+
+test("future-charge filtering is activated only while its details are open", () => {
+  assert.match(monthlyViewSource, /if \(!pendingDetailsOpen \|\| !normalizedSearchQuery\) return groupsForMonth/);
+  assert.match(monthlyViewSource, /visibleProviderPendingGroups/);
 });
 
 test("rows are sorted by the date the table actually displays", () => {
