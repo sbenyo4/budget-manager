@@ -16,7 +16,7 @@ import { normalizePreferences, normalizePreferencesPatch } from "./server/prefer
 import { isValidAIAnalysisPayload } from "./server/aiPayload";
 import { normalizeCategoryOverrideInput } from "./server/categoryOverride";
 import { lookupMerchantDetails } from "./server/merchantLookup";
-import { merchantDetails } from "./server/openFinance";
+import { getAccounts, getTransactions, isOpenFinanceConfigured, merchantDetails } from "./server/openFinance";
 
 /**
  * Server-side proxy for the open-finance.ai API.
@@ -808,10 +808,6 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
     return row ? normalizeServiceSettings(JSON.parse(row.data)) : EMPTY_SERVICE_SETTINGS;
   }
 
-  function isConfigured(settings: ServiceSettings): boolean {
-    return Boolean(settings.openFinanceClientId && settings.openFinanceClientSecret && settings.openFinanceUserId);
-  }
-
   async function getToken(ownerId: string, settings: ServiceSettings): Promise<string> {
     const cacheKey = `${ownerId}:${settings.openFinanceApiPrefix}:${settings.openFinanceUserId}:${settings.openFinanceClientId}:${settings.openFinanceClientSecret}`;
     const token = tokens.get(cacheKey);
@@ -1250,40 +1246,23 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
         sendJson(res, 200, { configured: false });
         return;
       }
-      sendJson(res, 200, { configured: isConfigured(settingsForUser(user.id)) });
+      sendJson(res, 200, { configured: isOpenFinanceConfigured(settingsForUser(user.id)) });
       return;
     }
 
     if (url.pathname === "/api/accounts") {
       const user = currentUnlockedUser(req);
-      const settings = user ? settingsForUser(user.id) : EMPTY_SERVICE_SETTINGS;
-      if (!user || !isConfigured(settings)) {
+      if (!user) {
+        sendJson(res, 401, { error: "PIN_REQUIRED" });
+        return;
+      }
+      const settings = settingsForUser(user.id);
+      if (!isOpenFinanceConfigured(settings)) {
         sendJson(res, 503, { error: "NOT_CONFIGURED" });
         return;
       }
-      fetchAccounts(user.id, settings)
-        .then((items) => {
-          const accounts = items.map((raw, i) => {
-            const balance = pickBalance(raw.balances);
-            const booked = bookedBalance(raw.balances);
-            return {
-              id: raw.id ?? `acc-${i}`,
-              providerId: raw.providerId ?? "",
-              accountType: raw.accountType ?? "",
-              accountName: raw.product ?? raw.accountName ?? raw.accountNumber ?? "",
-              currency: balance?.balanceAmount?.currency ?? "ILS",
-              balance: Number(balance?.balanceAmount?.amount ?? 0),
-              balanceDate: balance?.referenceDate ?? "",
-              ...(booked
-                ? {
-                    bookedBalance: Number(booked.balanceAmount?.amount ?? 0),
-                    bookedBalanceDate: booked.referenceDate ?? "",
-                  }
-                : {}),
-            };
-          });
-          sendJson(res, 200, accounts);
-        })
+      getAccounts(settings)
+        .then((accounts) => sendJson(res, 200, accounts))
         .catch((err: unknown) => {
           sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
         });
@@ -1298,8 +1277,12 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
         return;
       }
       const user = currentUnlockedUser(req);
-      const settings = user ? settingsForUser(user.id) : EMPTY_SERVICE_SETTINGS;
-      if (!user || !isConfigured(settings)) {
+      if (!user) {
+        sendJson(res, 401, { error: "PIN_REQUIRED" });
+        return;
+      }
+      const settings = settingsForUser(user.id);
+      if (!isOpenFinanceConfigured(settings)) {
         sendJson(res, 503, { error: "NOT_CONFIGURED" });
         return;
       }
@@ -1315,17 +1298,8 @@ function openFinanceProxy(env: Record<string, string>): Plugin {
         sendJson(res, 400, { error: "from/to must be YYYY-MM-DD" });
         return;
       }
-      Promise.all([
-        fetchTransactions(user.id, settings, from, to, "BANK"),
-        fetchTransactions(user.id, settings, from, to, "CARD"),
-      ])
-        .then(([bank, card]) => {
-          const flows = attachCardDebitDetails([
-            ...bank.map((raw, i) => normalize(raw, i, "bank")),
-            ...card.map((raw, i) => normalize(raw, i, "card")),
-          ]).filter((tx) => tx.date && tx.date >= from && tx.date <= to && tx.amount > 0);
-          sendJson(res, 200, dedupeTransactions(flows));
-        })
+      getTransactions(settings, from, to)
+        .then((transactions) => sendJson(res, 200, transactions))
         .catch((err: unknown) => {
           sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
         });

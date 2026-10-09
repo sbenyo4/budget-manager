@@ -3,7 +3,8 @@ import type { CheckingBalance, Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { budgetDate, cardDebitCutoffs, isConsumption, isSavings } from "../logic/flows";
 import { isRepeatedExpenseGroup } from "../logic/expenseRecurrence";
-import { fixedExpenseKey, fixedExpenseKeysFor } from "../logic/expenseScope";
+import { fixedExpenseKey } from "../logic/expenseScope";
+import { trendFixedExpenseKeys } from "../logic/trendExpenseScope";
 import type { BudgetPreferences } from "../api/preferences";
 import { mainColor, subLabel } from "../logic/categoryNames";
 import {
@@ -378,6 +379,10 @@ export function TrendsView({
     () => (isSearchActive || effectiveRange === "all" ? completePeriods : completePeriods.slice(0, effectiveRange)),
     [completePeriods, effectiveRange, isSearchActive]
   );
+  const classificationPeriods = useMemo(
+    () => (effectiveRange === "all" ? completePeriods : completePeriods.slice(0, effectiveRange)),
+    [completePeriods, effectiveRange]
+  );
   const categorizedTransactions = transactions;
   const searchedTransactions = useMemo(
     () =>
@@ -390,16 +395,9 @@ export function TrendsView({
   // category options: consumption mains seen in the chosen span, largest first
   const rangeFrom = chosen[chosen.length - 1]?.from ?? "";
   const rangeTo = chosen[0]?.to ?? "";
-  const fixedExpenseTransactions = useMemo(
-    () => searchedTransactions.filter((tx) => {
-      const date = budgetDate(tx);
-      return Boolean(rangeFrom && rangeTo && date >= rangeFrom && date <= rangeTo);
-    }),
-    [rangeFrom, rangeTo, searchedTransactions]
-  );
   const fixedExpenseKeys = useMemo(
-    () => fixedExpenseKeysFor(fixedExpenseTransactions, chosen, oneTimeExpenses, fixedExpenses),
-    [chosen, fixedExpenseTransactions, fixedExpenses, oneTimeExpenses]
+    () => trendFixedExpenseKeys(categorizedTransactions, classificationPeriods, oneTimeExpenses, fixedExpenses),
+    [categorizedTransactions, classificationPeriods, fixedExpenses, oneTimeExpenses]
   );
   const trendAlertTransactions = useMemo(
     () =>

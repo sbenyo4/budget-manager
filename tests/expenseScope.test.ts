@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { expenseOverrideKey, fixedExpenseKey, fixedExpenseKeysFor } from "../src/logic/expenseScope.ts";
+import { trendFixedExpenseKeys } from "../src/logic/trendExpenseScope.ts";
 import type { Period } from "../src/logic/periods.ts";
 import type { Transaction } from "../src/types.ts";
 
@@ -46,4 +47,20 @@ test("AI and budget UI fixed-expense classification share automatic and manual o
     new Set([expenseOverrideKey(annualFee)])
   );
   assert.equal(manualFixed.has(fixedExpenseKey(annualFee)), true);
+});
+
+test("trend search does not change fixed-versus-one-time classification", () => {
+  const rentJune = expense("rent-1", "2026-06-01", "Rent");
+  const rentJuly = expense("rent-2", "2026-07-01", "Rent");
+  const groceryJuly = expense("grocery", "2026-07-15", "Grocery");
+  const fixedKeys = trendFixedExpenseKeys(
+    [rentJune, rentJuly, groceryJuly],
+    periods,
+    new Set(),
+    new Set()
+  );
+  const searchedTransactions = [rentJuly];
+
+  assert.equal(fixedKeys.has(fixedExpenseKey(searchedTransactions[0])), true);
+  assert.equal(fixedKeys.has(fixedExpenseKey(groceryJuly)), false);
 });

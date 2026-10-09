@@ -52,6 +52,38 @@ test("a not-configured transactions response retains the existing settings-requi
   }
 });
 
+test("expired authentication and PIN-required responses are not reported as missing service settings", async (t) => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const error of ["AUTH_REQUIRED", "PIN_REQUIRED"]) {
+      await t.test(error, async () => {
+        globalThis.fetch = async () => new Response(JSON.stringify({ error }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+        await assert.rejects(fetchTransactions("2026-08-01", "2026-08-31"), new Error(error));
+        await assert.rejects(fetchCheckingBalance(), new Error(error));
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("checking-balance failures are surfaced instead of silently becoming an unavailable balance", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: "ACCOUNT_PROVIDER_FAILED" }), {
+    status: 502,
+    headers: { "Content-Type": "application/json" },
+  });
+
+  try {
+    await assert.rejects(fetchCheckingBalance(), new Error("ACCOUNT_PROVIDER_FAILED"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("checking balance retains both expected and closing-booked balances", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify([{

@@ -13,33 +13,43 @@ export interface Account {
   bookedBalanceDate?: string;
 }
 
+async function apiErrorMessage(res: Response): Promise<string> {
+  const text = await res.text();
+  let message = text || `HTTP ${res.status}`;
+  try {
+    const body = JSON.parse(text) as { error?: string };
+    message = body.error ?? message;
+  } catch {
+    // Keep the raw message for non-JSON platform errors.
+  }
+  return message;
+}
+
 /**
  * Current ILS checking-account balance (sum over checking accounts), or null
- * in demo mode / on failure — the UI falls back to relative cumulative sums.
+ * when the provider returned no ILS checking account.
  */
 export async function fetchCheckingBalance(signal?: AbortSignal): Promise<CheckingBalance | null> {
-  try {
-    const res = await authFetch("/api/accounts", { signal });
-    if (!res.ok) return null;
-    const accounts = (await res.json()) as Account[];
-    const checking = accounts.filter((a) => a.accountType === "CHECKING" && a.currency === "ILS");
-    if (checking.length === 0) return null;
-    const hasCompleteBookedBalance = checking.every((account) => Number.isFinite(account.bookedBalance));
-    const bookedDates = checking.map((account) => account.bookedBalanceDate).filter((date): date is string => Boolean(date));
-    return {
-      balance: checking.reduce((s, a) => s + a.balance, 0),
-      date: checking[0].balanceDate,
-      ...(hasCompleteBookedBalance
-        ? {
-            bookedBalance: checking.reduce((sum, account) => sum + (account.bookedBalance ?? 0), 0),
-            bookedDate: bookedDates.sort()[bookedDates.length - 1] ?? checking[0].balanceDate,
-          }
-        : {}),
-    };
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    return null;
+  const res = await authFetch("/api/accounts", { signal });
+  if (!res.ok) {
+    const message = await apiErrorMessage(res);
+    throw new Error(message === "NOT_CONFIGURED" ? "SERVICE_SETTINGS_REQUIRED" : message);
   }
+  const accounts = (await res.json()) as Account[];
+  const checking = accounts.filter((a) => a.accountType === "CHECKING" && a.currency === "ILS");
+  if (checking.length === 0) return null;
+  const hasCompleteBookedBalance = checking.every((account) => Number.isFinite(account.bookedBalance));
+  const bookedDates = checking.map((account) => account.bookedBalanceDate).filter((date): date is string => Boolean(date));
+  return {
+    balance: checking.reduce((s, a) => s + a.balance, 0),
+    date: checking[0].balanceDate,
+    ...(hasCompleteBookedBalance
+      ? {
+          bookedBalance: checking.reduce((sum, account) => sum + (account.bookedBalance ?? 0), 0),
+          bookedDate: bookedDates.sort()[bookedDates.length - 1] ?? checking[0].balanceDate,
+        }
+      : {}),
+  };
 }
 
 export interface FetchResult {
@@ -174,23 +184,8 @@ export function dedupeCardProviderAliasTransactions(transactions: Transaction[])
 export async function fetchTransactions(from: string, to: string, signal?: AbortSignal): Promise<FetchResult> {
   const res = await authFetch(`/api/transactions?from=${from}&to=${to}`, { signal });
   if (!res.ok) {
-    const text = await res.text();
-    let message = text || `HTTP ${res.status}`;
-    try {
-      const body = JSON.parse(text) as { error?: string };
-      message = body.error ?? message;
-    } catch {
-      // Keep the raw message for Vercel function errors.
-    }
-    if (
-      res.status === 401 ||
-      res.status === 404 ||
-      res.status === 503 ||
-      message === "AUTH_REQUIRED" ||
-      message === "NOT_CONFIGURED" ||
-      message.includes("NOT_FOUND") ||
-      message.includes("page could not be found")
-    ) {
+    const message = await apiErrorMessage(res);
+    if (message === "NOT_CONFIGURED") {
       throw new Error("SERVICE_SETTINGS_REQUIRED");
     }
     throw new Error(message);

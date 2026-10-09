@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Transaction } from "../types";
 import type { Period } from "../logic/periods";
 import { budgetDate, cardDebitCutoffs, isCardTransactionCharged, isConsumption, isSavings } from "../logic/flows";
@@ -82,6 +82,7 @@ export function AIAnalysisView({ transactions, periods, preferences }: Props) {
   const [loading, setLoading] = useState(false);
   const [cacheLoading, setCacheLoading] = useState(false);
   const [error, setError] = useState("");
+  const analysisRequestSequence = useRef(0);
 
   const selectedPeriod = useMemo(() => {
     if (periodKey) return periods.find((period) => period.key === periodKey) ?? periods[0] ?? null;
@@ -422,6 +423,8 @@ export function AIAnalysisView({ transactions, periods, preferences }: Props) {
   }, [analysisLabel, analysisMode, categoryKey, debitCutoffs, expenses, fixedExpenseKeys, incomeBasisAmount, incomeBasisMethod, incomes, isPartialSinglePeriod, monthEquivalent, periodCount, periodDays, periodTransactions, savingsTotal, selectedCategoryLabel, selectedPeriod, trendFrom, trendTo, typicalMonthlyIncome, userProfile]);
 
   const resetAnalysis = () => {
+    analysisRequestSequence.current += 1;
+    setLoading(false);
     setResult(null);
     setCacheInfo(null);
     setError("");
@@ -473,6 +476,8 @@ export function AIAnalysisView({ transactions, periods, preferences }: Props) {
 
   const runAnalysis = (forceRefresh = false) => {
     if (!analysisLabel) return;
+    const requestSequence = analysisRequestSequence.current + 1;
+    analysisRequestSequence.current = requestSequence;
     setLoading(true);
     setError("");
     if (forceRefresh) {
@@ -481,14 +486,18 @@ export function AIAnalysisView({ transactions, periods, preferences }: Props) {
     }
     analyzeBudgetWithAI({ ...analysisPayload, forceRefresh })
       .then((response) => {
+        if (analysisRequestSequence.current !== requestSequence) return;
         if (!response.result) return;
         setResult(response.result);
         setCacheInfo({ cached: response.cached, updatedAt: response.updatedAt ?? new Date().toISOString() });
       })
       .catch((err: unknown) => {
+        if (analysisRequestSequence.current !== requestSequence) return;
         setError(aiErrorMessage(err));
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (analysisRequestSequence.current === requestSequence) setLoading(false);
+      });
   };
 
   if (periods.length === 0) {

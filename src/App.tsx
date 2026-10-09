@@ -1,5 +1,6 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState, useTransition, type FormEvent, type ReactNode } from "react";
 import { fetchBudgetData } from "./api/openFinance";
+import { createPreferencePatchQueue, type PreferencePatchQueue } from "./api/preferencePatchQueue";
 import {
   emptyServiceSettings,
   emptyPreferences,
@@ -56,14 +57,7 @@ function readInitialTheme(): ThemeMode {
 
 function isMissingServiceSettingsError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return (
-    message === "SERVICE_SETTINGS_REQUIRED" ||
-    message === "NOT_CONFIGURED" ||
-    message === "AUTH_REQUIRED" ||
-    message.includes("NOT_FOUND") ||
-    message.includes("page could not be found") ||
-    message.includes("/api/service-settings")
-  );
+  return message === "SERVICE_SETTINGS_REQUIRED" || message === "NOT_CONFIGURED";
 }
 
 function serviceSettingsSaveErrorMessage(error: unknown): string {
@@ -223,9 +217,13 @@ function BudgetApp() {
   const [loading, setLoading] = useState(true);
   const preferencesSaveSeq = useRef(0);
   const preferencesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const preferencesSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const preferencesSaveQueueRef = useRef<PreferencePatchQueue<Partial<BudgetPreferences>, BudgetPreferences> | null>(null);
+  if (!preferencesSaveQueueRef.current) {
+    preferencesSaveQueueRef.current = createPreferencePatchQueue(patchPreferences);
+  }
   const pendingPreferencesPatchRef = useRef<Partial<BudgetPreferences>>({});
   const preferencesRef = useRef<BudgetPreferences>(emptyPreferences);
+  const persistedPreferencesRef = useRef<BudgetPreferences>(emptyPreferences);
   const [, startPreferencesTransition] = useTransition();
   const [view, setView] = useState<AppView>("monthly");
   const [theme, setTheme] = useState<ThemeMode>(readInitialTheme);
@@ -272,6 +270,7 @@ function BudgetApp() {
           setUser(null);
           setPinGate("checking");
           setPreferences(emptyPreferences);
+          persistedPreferencesRef.current = emptyPreferences;
           setServiceSettings(emptyServiceSettings);
           setAllTransactions([]);
           setBankBalance(null);
@@ -283,6 +282,7 @@ function BudgetApp() {
         setUser(session.user);
         setPinGate("checking");
         preferencesRef.current = savedPreferences;
+        persistedPreferencesRef.current = savedPreferences;
         setPreferences(savedPreferences);
         setTheme(savedPreferences.theme);
         setPreferencesLoading(false);
@@ -384,10 +384,10 @@ function BudgetApp() {
       preferencesSaveTimerRef.current = null;
       const patchToSave = pendingPreferencesPatchRef.current;
       pendingPreferencesPatchRef.current = {};
-      const saveRequest = preferencesSaveQueueRef.current.then(() => patchPreferences(patchToSave));
-      preferencesSaveQueueRef.current = saveRequest.then(() => undefined, () => undefined);
+      const saveRequest = preferencesSaveQueueRef.current!.enqueue(patchToSave);
       saveRequest
         .then((saved) => {
+          persistedPreferencesRef.current = saved;
           if (preferencesSaveSeq.current !== saveSeq) return;
           preferencesRef.current = saved;
           if (JSON.stringify(saved) !== JSON.stringify(next)) {
@@ -397,8 +397,10 @@ function BudgetApp() {
         })
         .catch((err: unknown) => {
           if (preferencesSaveSeq.current !== saveSeq) return;
-          preferencesRef.current = previousPreferences;
-          startPreferencesTransition(() => setPreferences(previousPreferences));
+          preferencesSaveQueueRef.current!.discardRetries();
+          const persistedPreferences = persistedPreferencesRef.current;
+          preferencesRef.current = persistedPreferences;
+          startPreferencesTransition(() => setPreferences(persistedPreferences));
           setSaveState("error");
           setError(err instanceof Error ? err.message : String(err));
         });
@@ -417,6 +419,7 @@ function BudgetApp() {
     migratePreferencesIfNeeded(nextPrefs)
       .then((saved) => {
         preferencesRef.current = saved;
+        persistedPreferencesRef.current = saved;
         setPreferences(saved);
         setTheme(saved.theme);
       })
@@ -441,6 +444,7 @@ function BudgetApp() {
     setAllTransactions([]);
     setBankBalance(null);
     setPreferences(emptyPreferences);
+    persistedPreferencesRef.current = emptyPreferences;
     setServiceSettings(emptyServiceSettings);
     request.catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
@@ -480,11 +484,8 @@ function BudgetApp() {
       }
     }
     const preferencesSaveRequest = shouldSavePreferences
-      ? preferencesSaveQueueRef.current.then(() => patchPreferences(combinedPreferencesPatch))
+      ? preferencesSaveQueueRef.current!.enqueue(combinedPreferencesPatch)
       : Promise.resolve(currentPreferences);
-    if (shouldSavePreferences) {
-      preferencesSaveQueueRef.current = preferencesSaveRequest.then(() => undefined, () => undefined);
-    }
     return Promise.all([
       shouldSaveService ? patchServiceSettings(servicePatch) : Promise.resolve(serviceSettings),
       preferencesSaveRequest,
@@ -492,6 +493,7 @@ function BudgetApp() {
       .then(([savedSettings, savedPreferences]) => {
         setServiceSettings(savedSettings);
         preferencesRef.current = savedPreferences;
+        persistedPreferencesRef.current = savedPreferences;
         setPreferences(savedPreferences);
         setSettingsOpen(false);
         const shouldReloadData = shouldSaveService && (serviceSettingsRequired || shouldReloadOpenFinance);
@@ -569,12 +571,16 @@ function BudgetApp() {
       preferencesRef.current = optimisticPreferences;
       setPreferences(optimisticPreferences);
       setSaveState("saving");
-      const saveRequest = preferencesSaveQueueRef.current.then(() =>
-        patchPreferences({ alertApprovals })
-      );
-      preferencesSaveQueueRef.current = saveRequest.then(() => undefined, () => undefined);
+      const patchToSave = { ...pendingPreferencesPatchRef.current, alertApprovals };
+      pendingPreferencesPatchRef.current = {};
+      if (preferencesSaveTimerRef.current) {
+        clearTimeout(preferencesSaveTimerRef.current);
+        preferencesSaveTimerRef.current = null;
+      }
+      const saveRequest = preferencesSaveQueueRef.current!.enqueue(patchToSave);
       return saveRequest
         .then((saved) => {
+          persistedPreferencesRef.current = saved;
           if (preferencesSaveSeq.current !== saveSeq) return;
           preferencesRef.current = saved;
           setPreferences(saved);
@@ -582,10 +588,8 @@ function BudgetApp() {
         })
         .catch((err: unknown) => {
           if (preferencesSaveSeq.current === saveSeq) {
-            const rolledBack = {
-              ...preferencesRef.current,
-              alertApprovals: previousPreferences.alertApprovals,
-            };
+            preferencesSaveQueueRef.current!.discardRetries();
+            const rolledBack = persistedPreferencesRef.current;
             preferencesRef.current = rolledBack;
             setPreferences(rolledBack);
             setSaveState("error");

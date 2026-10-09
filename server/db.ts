@@ -74,6 +74,34 @@ export function ensureSchema(): Promise<void> {
   if (!schemaReady) {
     const db = sql();
     schemaReady = (async () => {
+      const schemaState = (await db`
+        SELECT (
+          to_regclass('public.users') IS NOT NULL
+          AND to_regclass('public.sessions') IS NOT NULL
+          AND to_regclass('public.preferences') IS NOT NULL
+          AND to_regclass('public.service_settings') IS NOT NULL
+          AND to_regclass('public.user_pins') IS NOT NULL
+          AND to_regclass('public.ai_analysis_cache') IS NOT NULL
+          AND to_regclass('public.api_rate_limits') IS NOT NULL
+          AND to_regclass('public.merchant_lookup_cache') IS NOT NULL
+          AND to_regclass('public.sessions_expires_at_idx') IS NOT NULL
+          AND to_regclass('public.ai_analysis_cache_user_updated_idx') IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'sessions' AND column_name = 'pin_unlocked_at'
+          )
+          AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'sessions' AND column_name = 'pin_failures'
+          )
+          AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'sessions' AND column_name = 'pin_locked_until'
+          )
+        ) AS ready
+      `) as Array<{ ready: boolean }>;
+      if (schemaState[0]?.ready) return;
+
       await db`
         CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
