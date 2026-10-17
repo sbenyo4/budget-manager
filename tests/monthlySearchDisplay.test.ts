@@ -9,6 +9,7 @@ import {
   accountMovementsForDisplay,
   pendingTransactionMatchesSearch,
   sortTransactionsByDisplayedDate,
+  transactionMatchesAdvancedSearch,
   transactionForDisplayedDebitDetails,
 } from "../src/components/MonthlyView";
 import type { Transaction } from "../src/types";
@@ -62,8 +63,38 @@ test("free search matches future charges by their visible transaction fields", (
   assert.equal(pendingTransactionMatchesSearch(matchedPurchase, "עסקה אחרת"), false);
 });
 
+test("advanced search applies date and amount ranges inclusively", () => {
+  const filters = {
+    dateMode: "range" as const,
+    dateFrom: "2026-07-01",
+    dateTo: "2026-07-31",
+    monthsBack: "",
+    minAmount: "25",
+    maxAmount: "30",
+  };
+
+  assert.equal(transactionMatchesAdvancedSearch(matchedPurchase, filters, "2026-10-17"), true);
+  assert.equal(transactionMatchesAdvancedSearch({ ...matchedPurchase, date: "2026-06-30" }, filters, "2026-10-17"), false);
+  assert.equal(transactionMatchesAdvancedSearch({ ...matchedPurchase, amount: 30.01 }, filters, "2026-10-17"), false);
+});
+
+test("months-back search is clamped to the same calendar day and excludes future transactions", () => {
+  const filters = {
+    dateMode: "months" as const,
+    dateFrom: "",
+    dateTo: "",
+    monthsBack: "3",
+    minAmount: "",
+    maxAmount: "",
+  };
+
+  assert.equal(transactionMatchesAdvancedSearch({ ...matchedPurchase, date: "2026-07-17" }, filters, "2026-10-17"), true);
+  assert.equal(transactionMatchesAdvancedSearch({ ...matchedPurchase, date: "2026-07-16" }, filters, "2026-10-17"), false);
+  assert.equal(transactionMatchesAdvancedSearch({ ...matchedPurchase, date: "2026-10-18" }, filters, "2026-10-17"), false);
+});
+
 test("future-charge filtering is activated only while its details are open", () => {
-  assert.match(monthlyViewSource, /if \(!pendingDetailsOpen \|\| !normalizedSearchQuery\) return groupsForMonth/);
+  assert.match(monthlyViewSource, /if \(!pendingDetailsOpen \|\| !hasAnySearch\) return groupsForMonth/);
   assert.match(monthlyViewSource, /visibleProviderPendingGroups/);
 });
 

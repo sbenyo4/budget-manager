@@ -94,6 +94,58 @@ test("the monthly search filters future charges only after their panel is opened
   }
 });
 
+test("advanced search intersects free text, date, and amount across periods", async () => {
+  const restoreDom = installDom();
+  const { cleanup, fireEvent, render } = await import("@testing-library/react");
+  const userEvent = (await import("@testing-library/user-event")).default;
+  const user = userEvent.setup({ document: globalThis.document });
+  const bankTransaction = (id: string, date: string, merchant: string, amount: number): Transaction => ({
+    id,
+    date,
+    merchant,
+    amount,
+    status: "BOOKED",
+    source: "bank",
+    type: "expense",
+    categoryMain: "HOUSEHOLD_&_SERVICES",
+    categorySub: "OTHER",
+  });
+
+  try {
+    const view = render(createElement(MonthlyView, {
+      transactions: [
+        bankTransaction("july-match", "2026-07-15", "Coffee history", 25),
+        bankTransaction("july-pricey", "2026-07-16", "Coffee expensive", 80),
+        bankTransaction("september", "2026-09-10", "Coffee current", 25),
+      ],
+      periods: [{ key: "sep", label: "ספטמבר", from: "2026-09-01", to: "2026-09-30", salaryBased: true }],
+      bankBalance: null,
+      preferences: emptyPreferences,
+      onPreferencesChange: () => undefined,
+    }));
+
+    await user.type(view.getByRole("searchbox", { name: /חיפוש/ }), "Coffee");
+    await user.click(view.getByRole("button", { name: "סינון חיפוש מתקדם" }));
+    assert.ok(view.getByRole("dialog", { name: "סינון חיפוש" }));
+    await user.click(view.getByRole("radio", { name: "טווח תאריכים" }));
+
+    fireEvent.change(view.getByLabelText("מתאריך"), { target: { value: "2026-07-01" } });
+    fireEvent.change(view.getByLabelText("עד תאריך"), { target: { value: "2026-07-31" } });
+    fireEvent.change(view.getByLabelText("סכום מקסימלי"), { target: { value: "30" } });
+    await user.click(view.getByRole("button", { name: "החלת סינון" }));
+
+    const visibleRows = Array.from(view.container.querySelectorAll(".tx-table tbody tr"))
+      .map((row) => row.textContent ?? "")
+      .join("\n");
+    assert.match(visibleRows, /Coffee history/);
+    assert.doesNotMatch(visibleRows, /Coffee expensive/);
+    assert.doesNotMatch(visibleRows, /Coffee current/);
+  } finally {
+    cleanup();
+    restoreDom();
+  }
+});
+
 test("an AI response for an old selection cannot replace the active selection's result", async () => {
   const restoreDom = installDom();
   const originalFetch = globalThis.fetch;

@@ -239,6 +239,25 @@ const MAX_INFERRED_BILLING_DAYS = 45;
 const PENDING_IDENTITY_VERSION = 1;
 type ExpenseScope = "all" | "fixed" | "variable";
 type CategoryViewMode = "transactions" | "summary" | "statistics";
+export type AdvancedSearchDateMode = "none" | "range" | "months";
+
+export interface AdvancedSearchFilters {
+  dateMode: AdvancedSearchDateMode;
+  dateFrom: string;
+  dateTo: string;
+  monthsBack: string;
+  minAmount: string;
+  maxAmount: string;
+}
+
+const EMPTY_ADVANCED_SEARCH: AdvancedSearchFilters = {
+  dateMode: "none",
+  dateFrom: "",
+  dateTo: "",
+  monthsBack: "",
+  minAmount: "",
+  maxAmount: "",
+};
 
 interface CategoryExpenseGroup {
   key: string;
@@ -294,6 +313,84 @@ function addIsoDays(value: string, days: number): string {
   const date = new Date(`${value}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
+}
+
+function subtractIsoMonths(value: string, months: number): string {
+  const [year, month, day] = value.split("-").map(Number);
+  const targetMonth = month - 1 - months;
+  const targetYear = year + Math.floor(targetMonth / 12);
+  const normalizedMonth = ((targetMonth % 12) + 12) % 12;
+  const lastDay = new Date(Date.UTC(targetYear, normalizedMonth + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(targetYear, normalizedMonth, Math.min(day, lastDay))).toISOString().slice(0, 10);
+}
+
+export function hasActiveAdvancedSearch(filters: AdvancedSearchFilters): boolean {
+  const hasDateRange = filters.dateMode === "range" && Boolean(filters.dateFrom || filters.dateTo);
+  const monthsBack = Number(filters.monthsBack);
+  const hasMonthsBack = filters.dateMode === "months" && Number.isFinite(monthsBack) && monthsBack > 0;
+  return hasDateRange || hasMonthsBack || filters.minAmount !== "" || filters.maxAmount !== "";
+}
+
+export function transactionMatchesAdvancedSearch(
+  tx: Transaction,
+  filters: AdvancedSearchFilters,
+  today = todayIso()
+): boolean {
+  if (filters.dateMode === "range") {
+    if (filters.dateFrom && tx.date < filters.dateFrom) return false;
+    if (filters.dateTo && tx.date > filters.dateTo) return false;
+  } else if (filters.dateMode === "months") {
+    const monthsBack = Math.floor(Number(filters.monthsBack));
+    if (Number.isFinite(monthsBack) && monthsBack > 0) {
+      if (tx.date < subtractIsoMonths(today, monthsBack) || tx.date > today) return false;
+    }
+  }
+
+  const amount = Math.abs(tx.amount);
+  const minAmount = Number(filters.minAmount);
+  const maxAmount = Number(filters.maxAmount);
+  if (filters.minAmount !== "" && Number.isFinite(minAmount) && amount < minAmount) return false;
+  if (filters.maxAmount !== "" && Number.isFinite(maxAmount) && amount > maxAmount) return false;
+  return true;
+}
+
+function normalizeAdvancedSearch(filters: AdvancedSearchFilters): AdvancedSearchFilters {
+  const normalized = {
+    ...filters,
+    dateFrom: filters.dateFrom.trim(),
+    dateTo: filters.dateTo.trim(),
+    monthsBack: filters.monthsBack.trim(),
+    minAmount: filters.minAmount.trim(),
+    maxAmount: filters.maxAmount.trim(),
+  };
+  const min = Number(normalized.minAmount);
+  const max = Number(normalized.maxAmount);
+  if (normalized.minAmount !== "" && normalized.maxAmount !== "" && min > max) {
+    normalized.minAmount = String(max);
+    normalized.maxAmount = String(min);
+  }
+  return normalized;
+}
+
+function advancedSearchLabel(filters: AdvancedSearchFilters): string {
+  const parts: string[] = [];
+  if (filters.dateMode === "range" && (filters.dateFrom || filters.dateTo)) {
+    parts.push(filters.dateFrom && filters.dateTo
+      ? `${formatShortDate(filters.dateFrom)}–${formatShortDate(filters.dateTo)}`
+      : filters.dateFrom
+        ? `מ־${formatShortDate(filters.dateFrom)}`
+        : `עד ${formatShortDate(filters.dateTo)}`);
+  } else if (filters.dateMode === "months" && Number(filters.monthsBack) > 0) {
+    parts.push(`${filters.monthsBack} חודשים אחורה`);
+  }
+  if (filters.minAmount || filters.maxAmount) {
+    parts.push(filters.minAmount && filters.maxAmount
+      ? `${filters.minAmount}–${filters.maxAmount} ₪`
+      : filters.minAmount
+        ? `מ־${filters.minAmount} ₪`
+        : `עד ${filters.maxAmount} ₪`);
+  }
+  return parts.join(" · ");
 }
 
 function weeklyExpenseBuckets(expenses: Transaction[], throughDate: string): WeeklyExpenseBucket[] {
@@ -683,6 +780,9 @@ export function MonthlyView({
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const [cardFilter, setCardFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [advancedSearch, setAdvancedSearch] = useState<AdvancedSearchFilters>(EMPTY_ADVANCED_SEARCH);
+  const [advancedSearchDraft, setAdvancedSearchDraft] = useState<AdvancedSearchFilters>(EMPTY_ADVANCED_SEARCH);
+  const [advancedSearchOpen, setAdvancedSearchOpen] = useState(false);
   const [expandedDebitId, setExpandedDebitId] = useState<string | null>(null);
   const [expandedTransactionId, setExpandedTransactionId] = useState<string | null>(null);
   const [merchantLookups, setMerchantLookups] = useState<Record<string, MerchantLookupState>>({});
@@ -696,6 +796,9 @@ export function MonthlyView({
   const normalizedSearchQuery = useMemo(() => activeSearchQuery(searchQuery), [searchQuery]);
   const visibleSearchQuery = visibleSearchTerm(searchQuery);
   const hasActiveSearch = Boolean(normalizedSearchQuery);
+  const hasAdvancedSearch = hasActiveAdvancedSearch(advancedSearch);
+  const hasAnySearch = hasActiveSearch || hasAdvancedSearch;
+  const advancedFilterLabel = advancedSearchLabel(advancedSearch);
   const sectionOverrides = preferences.sectionOverrides;
   const installmentOverrides = preferences.installmentOverrides;
   const oneTimeExpenses = useMemo(() => new Set(preferences.oneTimeExpenses), [preferences.oneTimeExpenses]);
@@ -732,6 +835,15 @@ export function MonthlyView({
   }, [periodKey, periods]);
   const periodFrom = period?.from ?? "";
   const periodTo = period?.to ?? "";
+
+  useEffect(() => {
+    if (!advancedSearchOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAdvancedSearchOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [advancedSearchOpen]);
 
   // Card purchases after the last aggregate card debit haven't been charged
   // to the account yet — they're the upcoming bill
@@ -906,12 +1018,13 @@ export function MonthlyView({
     const groupsForMonth = pendingMonthFilter === null
       ? pendingGroups
       : pendingGroups.filter((group) => (group.billingDate?.slice(0, 7) ?? "next") === pendingMonthFilter);
-    if (!pendingDetailsOpen || !normalizedSearchQuery) return groupsForMonth;
+    if (!pendingDetailsOpen || !hasAnySearch) return groupsForMonth;
 
     return groupsForMonth
       .map((group) => {
         const transactions = group.transactions.filter((tx) =>
-          pendingTransactionMatchesSearch(tx, normalizedSearchQuery, effectiveCategoryMain(tx))
+          pendingTransactionMatchesSearch(tx, normalizedSearchQuery, effectiveCategoryMain(tx)) &&
+          transactionMatchesAdvancedSearch(tx, advancedSearch)
         );
         let total = 0;
         let pendingInstallmentCount = 0;
@@ -935,6 +1048,8 @@ export function MonthlyView({
       .filter((group) => group.transactions.length > 0);
   }, [
     effectiveCategoryMain,
+    advancedSearch,
+    hasAnySearch,
     inferredPendingBillingDates,
     installmentOverrides,
     normalizedSearchQuery,
@@ -956,16 +1071,17 @@ export function MonthlyView({
     }));
   }, [providerPendingCard]);
   const visibleProviderPendingGroups = useMemo(() => {
-    if (!pendingDetailsOpen || !normalizedSearchQuery) return providerPendingGroups;
+    if (!pendingDetailsOpen || !hasAnySearch) return providerPendingGroups;
     return providerPendingGroups
       .map((group) => ({
         ...group,
         transactions: group.transactions.filter((tx) =>
-          pendingTransactionMatchesSearch(tx, normalizedSearchQuery, effectiveCategoryMain(tx))
+          pendingTransactionMatchesSearch(tx, normalizedSearchQuery, effectiveCategoryMain(tx)) &&
+          transactionMatchesAdvancedSearch(tx, advancedSearch)
         ),
       }))
       .filter((group) => group.transactions.length > 0);
-  }, [effectiveCategoryMain, normalizedSearchQuery, pendingDetailsOpen, providerPendingGroups]);
+  }, [advancedSearch, effectiveCategoryMain, hasAnySearch, normalizedSearchQuery, pendingDetailsOpen, providerPendingGroups]);
   useEffect(() => {
     if (
       pendingMonthFilter !== null &&
@@ -1091,20 +1207,40 @@ export function MonthlyView({
     () => (categoryFilter || expenseScope !== "all" ? sortedCategoryMovements : sortedAccountMovements),
     [categoryFilter, expenseScope, sortedAccountMovements, sortedCategoryMovements]
   );
+  const searchCandidates = useMemo(() => {
+    if (!hasAdvancedSearch) return categoryListed;
+    if (cardFilter) {
+      return categorizedTransactions.filter((tx) => tx.source === "card" && matchesCardFilter(tx, cardFilter));
+    }
+    return accountMovementsForDisplay(categorizedTransactions.filter(isBookedBankMovement), reflectedPendingTransactions);
+  }, [cardFilter, categorizedTransactions, categoryListed, hasAdvancedSearch, reflectedPendingTransactions]);
   const txMatchesVisibleSearch = useCallback(
     (tx: Transaction) => {
-      if (!normalizedSearchQuery) return true;
       const debitDetails = tx.detailTransactions?.length ? tx.detailTransactions : fallbackDebitDetails.get(tx.id) ?? [];
-      return (
-        txSelfMatchesSearch(tx, normalizedSearchQuery, effectiveCategoryMain(tx)) ||
-        Boolean(
-          debitDetails.some((detail) =>
-            detailSelfMatchesSearch(detail, normalizedSearchQuery, effectiveCategoryMain(detail))
+      if (!hasAdvancedSearch) {
+        if (!normalizedSearchQuery) return true;
+        return (
+          txSelfMatchesSearch(tx, normalizedSearchQuery, effectiveCategoryMain(tx)) ||
+          Boolean(
+            debitDetails.some((detail) =>
+              detailSelfMatchesSearch(detail, normalizedSearchQuery, effectiveCategoryMain(detail))
+            )
           )
-        )
+        );
+      }
+      const matchesAllFilters = (candidate: Transaction, detail = false) => {
+        if (categoryFilter && effectiveCategoryMain(candidate) !== categoryFilter) return false;
+        if (!isInExpenseScope(candidate, expenseScope, fixedExpenseKeys)) return false;
+        if (!transactionMatchesAdvancedSearch(candidate, advancedSearch)) return false;
+        return detail
+          ? detailSelfMatchesSearch(candidate, normalizedSearchQuery, effectiveCategoryMain(candidate))
+          : txSelfMatchesSearch(candidate, normalizedSearchQuery, effectiveCategoryMain(candidate));
+      };
+      return (
+        matchesAllFilters(tx) || debitDetails.some((detail) => matchesAllFilters(detail, true))
       );
     },
-    [effectiveCategoryMain, fallbackDebitDetails, normalizedSearchQuery]
+    [advancedSearch, categoryFilter, effectiveCategoryMain, expenseScope, fallbackDebitDetails, fixedExpenseKeys, hasAdvancedSearch, normalizedSearchQuery]
   );
   const toggleCategoryInCalculation = useCallback((key: string) => {
     setExcludedCategories((prev) => {
@@ -1132,6 +1268,7 @@ export function MonthlyView({
         if (categoryFilter && effectiveCategoryMain(detail) !== categoryFilter) return false;
         if (!isInExpenseScope(detail, expenseScope, fixedExpenseKeys)) return false;
         if (cardFilter && !matchesCardFilter(detail, cardFilter)) return false;
+        if (hasAdvancedSearch && !transactionMatchesAdvancedSearch(detail, advancedSearch)) return false;
         if (normalizedSearchQuery && !detailSelfMatchesSearch(detail, normalizedSearchQuery, effectiveCategoryMain(detail))) {
           return false;
         }
@@ -1139,18 +1276,20 @@ export function MonthlyView({
       });
     },
     [
+      advancedSearch,
       cardFilter,
       categoryFilter,
       effectiveCategoryMain,
       expenseScope,
       fallbackDebitDetails,
       fixedExpenseKeys,
+      hasAdvancedSearch,
       normalizedSearchQuery,
     ]
   );
   const listed = useMemo(
-    () => sortTransactionsByDisplayedDate(categoryListed.filter(txMatchesVisibleSearch), visibleDebitDetailsFor),
-    [categoryListed, txMatchesVisibleSearch, visibleDebitDetailsFor]
+    () => sortTransactionsByDisplayedDate(searchCandidates.filter(txMatchesVisibleSearch), visibleDebitDetailsFor),
+    [searchCandidates, txMatchesVisibleSearch, visibleDebitDetailsFor]
   );
   const debitDetailsByTransactionId = useMemo(() => {
     const detailsById = new Map<string, { all: Transaction[]; visible: Transaction[] }>();
@@ -1273,6 +1412,7 @@ export function MonthlyView({
             setCategoryViewMode("transactions");
             setCardFilter("");
             setSearchQuery("");
+            setAdvancedSearch(EMPTY_ADVANCED_SEARCH);
             setExpandedDebitId(null);
             setExpandedTransactionId(null);
           }}
@@ -1320,6 +1460,22 @@ export function MonthlyView({
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="חיפוש חופשי"
           />
+          <button
+            type="button"
+            className={`icon-button search-filter-button ${hasAdvancedSearch ? "active" : ""}`}
+            aria-label="סינון חיפוש מתקדם"
+            title="סינון לפי תאריך וסכום"
+            aria-haspopup="dialog"
+            aria-expanded={advancedSearchOpen}
+            onClick={() => {
+              setAdvancedSearchDraft({ ...advancedSearch });
+              setAdvancedSearchOpen(true);
+            }}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M4 6h16M7 12h10M10 18h4" />
+            </svg>
+          </button>
         </span>
         <div className="scope-toggle" role="group" aria-label="סינון הוצאות">
           <button type="button" className={expenseScope === "all" ? "active" : ""} onClick={() => setExpenseScope("all")}>
@@ -1334,6 +1490,159 @@ export function MonthlyView({
         </div>
         <span className="period-hint">{expenseScopeLabel(expenseScope)}</span>
       </div>
+
+      {advancedSearchOpen && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setAdvancedSearchOpen(false);
+          }}
+        >
+          <section
+            className="settings-modal advanced-search-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="advanced-search-title"
+          >
+            <div className="settings-header">
+              <h2 id="advanced-search-title">סינון חיפוש</h2>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="סגירת חלון הסינון"
+                onClick={() => setAdvancedSearchOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <form
+              className="settings-form advanced-search-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                setAdvancedSearch(normalizeAdvancedSearch(advancedSearchDraft));
+                setAdvancedSearchOpen(false);
+              }}
+            >
+              <fieldset>
+                <legend>תאריך עסקה</legend>
+                <div className="advanced-search-date-modes" role="radiogroup" aria-label="אופן סינון תאריך">
+                  <label>
+                    <input
+                      type="radio"
+                      name="advanced-date-mode"
+                      value="none"
+                      checked={advancedSearchDraft.dateMode === "none"}
+                      onChange={() => setAdvancedSearchDraft((current) => ({ ...current, dateMode: "none" }))}
+                    />
+                    ללא סינון
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="advanced-date-mode"
+                      value="range"
+                      checked={advancedSearchDraft.dateMode === "range"}
+                      onChange={() => setAdvancedSearchDraft((current) => ({ ...current, dateMode: "range" }))}
+                    />
+                    טווח תאריכים
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="advanced-date-mode"
+                      value="months"
+                      checked={advancedSearchDraft.dateMode === "months"}
+                      onChange={() => setAdvancedSearchDraft((current) => ({ ...current, dateMode: "months" }))}
+                    />
+                    חודשים אחורה
+                  </label>
+                </div>
+                {advancedSearchDraft.dateMode === "range" && (
+                  <div className="advanced-search-fields two-columns">
+                    <label>
+                      מתאריך
+                      <input
+                        type="date"
+                        value={advancedSearchDraft.dateFrom}
+                        max={advancedSearchDraft.dateTo || undefined}
+                        onChange={(event) => setAdvancedSearchDraft((current) => ({ ...current, dateFrom: event.target.value }))}
+                      />
+                    </label>
+                    <label>
+                      עד תאריך
+                      <input
+                        type="date"
+                        value={advancedSearchDraft.dateTo}
+                        min={advancedSearchDraft.dateFrom || undefined}
+                        onChange={(event) => setAdvancedSearchDraft((current) => ({ ...current, dateTo: event.target.value }))}
+                      />
+                    </label>
+                  </div>
+                )}
+                {advancedSearchDraft.dateMode === "months" && (
+                  <label>
+                    מספר חודשים אחורה
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min="1"
+                      max="120"
+                      step="1"
+                      value={advancedSearchDraft.monthsBack}
+                      placeholder="לדוגמה: 3"
+                      onChange={(event) => setAdvancedSearchDraft((current) => ({ ...current, monthsBack: event.target.value }))}
+                    />
+                  </label>
+                )}
+              </fieldset>
+              <fieldset>
+                <legend>טווח סכום</legend>
+                <div className="advanced-search-fields two-columns">
+                  <label>
+                    סכום מינימלי
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      step="0.01"
+                      value={advancedSearchDraft.minAmount}
+                      placeholder="0"
+                      onChange={(event) => setAdvancedSearchDraft((current) => ({ ...current, minAmount: event.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    סכום מקסימלי
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      step="0.01"
+                      value={advancedSearchDraft.maxAmount}
+                      placeholder="ללא הגבלה"
+                      onChange={(event) => setAdvancedSearchDraft((current) => ({ ...current, maxAmount: event.target.value }))}
+                    />
+                  </label>
+                </div>
+              </fieldset>
+              <p className="advanced-search-hint">הסינון יחול יחד עם החיפוש החופשי ועל כל היסטוריית העסקאות הזמינה.</p>
+              <div className="settings-actions advanced-search-actions">
+                <button
+                  type="button"
+                  className="table-toggle"
+                  onClick={() => setAdvancedSearchDraft({ ...EMPTY_ADVANCED_SEARCH })}
+                >
+                  ניקוי
+                </button>
+                <button type="button" className="table-toggle" onClick={() => setAdvancedSearchOpen(false)}>
+                  ביטול
+                </button>
+                <button type="submit" className="table-toggle primary-action">החלת סינון</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
 
       {categoryFilter && (
         <div className="stat-tiles category-summary">
@@ -1538,8 +1847,10 @@ export function MonthlyView({
             </div>
           ) : (
             <p className="empty-row">
-              {hasActiveSearch
-                ? `לא נמצאו חיובים עתידיים שמתאימים לחיפוש „${visibleSearchQuery}”.`
+              {hasAnySearch
+                ? hasActiveSearch
+                  ? `לא נמצאו חיובים עתידיים שמתאימים לחיפוש „${visibleSearchQuery}” ולמסננים שנבחרו.`
+                  : "לא נמצאו חיובים עתידיים שמתאימים למסננים שנבחרו."
                 : "אין חיובי אשראי מאושרים שטרם חויבו בתקופה הזו."}
             </p>
           )}
@@ -1611,9 +1922,10 @@ export function MonthlyView({
             {categoryFilter && <span className="filter-tag"> · {categoryLabel(categoryFilter)}</span>}
             {cardFilter && <span className="filter-tag"> · כרטיס {cardFilter}</span>}
             {hasActiveSearch && <span className="filter-tag"> · "{visibleSearchQuery}"</span>}
+            {hasAdvancedSearch && <span className="filter-tag"> · {advancedFilterLabel}</span>}
             {expenseScope !== "all" && <span className="filter-tag"> · {expenseScopeLabel(expenseScope)}</span>}
           </h2>
-          {(categoryFilter || cardFilter || hasActiveSearch || expenseScope !== "all") && (
+          {(categoryFilter || cardFilter || hasAnySearch || expenseScope !== "all") && (
             <button
               className="table-toggle"
               onClick={() => {
@@ -1621,6 +1933,7 @@ export function MonthlyView({
                 setCategoryViewMode("transactions");
                 setCardFilter("");
                 setSearchQuery("");
+                setAdvancedSearch(EMPTY_ADVANCED_SEARCH);
                 setExpenseScope("all");
               }}
             >
